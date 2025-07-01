@@ -33,6 +33,7 @@ func GetLogger(name string) DbLoggerInterface {
 		return logger
 	}
 	return &DefaultLogger{
+		FilePath:      "./logs/db/db.log",
 		MaxSize:       100,
 		MaxBackups:    10,
 		MaxAge:        30,
