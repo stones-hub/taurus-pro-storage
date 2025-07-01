@@ -20,72 +20,153 @@ package redisx
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 )
 
-type RedisConfig struct {
-	Addrs        []string
-	Password     string
-	DB           int
-	PoolSize     int
-	MinIdleConns int
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	MaxRetries   int
-}
-
+// RedisClient Redis客户端结构
 type RedisClient struct {
 	client redis.UniversalClient
 }
 
+// Redis 全局Redis客户端
 var Redis *RedisClient
 
-// 支持单机版、主从模式和集群模式
-func InitRedis(config RedisConfig) *RedisClient {
-	var client redis.UniversalClient
+// Options Redis配置选项
+type Options struct {
+	Addrs        []string      // Redis地址列表
+	Password     string        // 密码
+	DB           int           // 数据库编号
+	PoolSize     int           // 连接池大小
+	MinIdleConns int           // 最小空闲连接数
+	DialTimeout  time.Duration // 连接超时时间
+	ReadTimeout  time.Duration // 读取超时时间
+	WriteTimeout time.Duration // 写入超时时间
+	MaxRetries   int           // 最大重试次数
+}
 
-	options := &redis.Options{
-		Addr:         config.Addrs[0],
-		Password:     config.Password,
-		DB:           config.DB,
-		PoolSize:     config.PoolSize,
-		MinIdleConns: config.MinIdleConns,
-		DialTimeout:  config.DialTimeout * time.Second,
-		ReadTimeout:  config.ReadTimeout * time.Second,
-		WriteTimeout: config.WriteTimeout * time.Second,
-		MaxRetries:   config.MaxRetries,
+// Option 定义配置选项函数类型
+type Option func(*Options)
+
+// DefaultOptions 返回默认配置
+func DefaultOptions() *Options {
+	return &Options{
+		Addrs:        []string{"localhost:6379"},
+		DB:           0,
+		PoolSize:     10,
+		MinIdleConns: 5,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		MaxRetries:   3,
+	}
+}
+
+// WithAddrs 设置Redis地址列表
+func WithAddrs(addrs ...string) Option {
+	return func(o *Options) {
+		o.Addrs = addrs
+	}
+}
+
+// WithPassword 设置密码
+func WithPassword(password string) Option {
+	return func(o *Options) {
+		o.Password = password
+	}
+}
+
+// WithDB 设置数据库编号
+func WithDB(db int) Option {
+	return func(o *Options) {
+		o.DB = db
+	}
+}
+
+// WithPoolSize 设置连接池大小
+func WithPoolSize(size int) Option {
+	return func(o *Options) {
+		o.PoolSize = size
+	}
+}
+
+// WithMinIdleConns 设置最小空闲连接数
+func WithMinIdleConns(n int) Option {
+	return func(o *Options) {
+		o.MinIdleConns = n
+	}
+}
+
+// WithTimeout 设置超时时间
+func WithTimeout(dial, read, write time.Duration) Option {
+	return func(o *Options) {
+		o.DialTimeout = dial
+		o.ReadTimeout = read
+		o.WriteTimeout = write
+	}
+}
+
+// WithMaxRetries 设置最大重试次数
+func WithMaxRetries(n int) Option {
+	return func(o *Options) {
+		o.MaxRetries = n
+	}
+}
+
+// InitRedis 初始化Redis客户端
+func InitRedis(opts ...Option) error {
+	// 使用默认配置
+	options := DefaultOptions()
+
+	// 应用自定义配置
+	for _, opt := range opts {
+		opt(options)
 	}
 
-	if len(config.Addrs) == 1 {
-		// 单机版
-		client = redis.NewClient(options)
+	var client redis.UniversalClient
+
+	// 根据地址数量决定使用的模式
+	if len(options.Addrs) == 1 {
+		// 单机模式
+		client = redis.NewClient(&redis.Options{
+			Addr:         options.Addrs[0],
+			Password:     options.Password,
+			DB:           options.DB,
+			PoolSize:     options.PoolSize,
+			MinIdleConns: options.MinIdleConns,
+			DialTimeout:  options.DialTimeout,
+			ReadTimeout:  options.ReadTimeout,
+			WriteTimeout: options.WriteTimeout,
+			MaxRetries:   options.MaxRetries,
+		})
 	} else {
-		// 主从模式或集群模式
+		// 集群模式
 		client = redis.NewUniversalClient(&redis.UniversalOptions{
-			Addrs:        config.Addrs,
-			Password:     config.Password,
-			DB:           config.DB,
-			PoolSize:     config.PoolSize,
-			MinIdleConns: config.MinIdleConns,
-			DialTimeout:  config.DialTimeout * time.Second,
-			ReadTimeout:  config.ReadTimeout * time.Second,
-			WriteTimeout: config.WriteTimeout * time.Second,
-			MaxRetries:   config.MaxRetries,
+			Addrs:        options.Addrs,
+			Password:     options.Password,
+			DB:           options.DB,
+			PoolSize:     options.PoolSize,
+			MinIdleConns: options.MinIdleConns,
+			DialTimeout:  options.DialTimeout,
+			ReadTimeout:  options.ReadTimeout,
+			WriteTimeout: options.WriteTimeout,
+			MaxRetries:   options.MaxRetries,
 		})
 	}
 
-	_, err := client.Ping(context.Background()).Result()
-	if err != nil {
-		log.Fatalf("redis connect failed: %v\n", err)
+	// 测试连接
+	ctx, cancel := context.WithTimeout(context.Background(), options.DialTimeout)
+	defer cancel()
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("redis connect failed: %v", err)
 	}
 
 	Redis = &RedisClient{client: client}
 
-	return Redis
+	return nil
 }
 
 // Set 设置键值对
@@ -164,9 +245,14 @@ func (r *RedisClient) RPop(ctx context.Context, key string) (string, error) {
 	return r.client.RPop(ctx, key).Result()
 }
 
-// Close 关闭客户端连接
+// Close 关闭Redis连接
 func (r *RedisClient) Close() error {
 	return r.client.Close()
+}
+
+// Client 获取原始的Redis客户端
+func (r *RedisClient) Client() redis.UniversalClient {
+	return r.client
 }
 
 // Lock 尝试获取一个分布式锁
