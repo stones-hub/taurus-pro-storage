@@ -183,6 +183,11 @@ func (r *RedisClient) Get(ctx context.Context, key string) (string, error) {
 	return result, err
 }
 
+// Del 删除键
+func (r *RedisClient) Del(ctx context.Context, keys ...string) error {
+	return r.client.Del(ctx, keys...).Err()
+}
+
 // Incr 原子递增
 func (r *RedisClient) Incr(ctx context.Context, key string) (int64, error) {
 	return r.client.Incr(ctx, key).Result()
