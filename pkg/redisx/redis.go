@@ -294,3 +294,7 @@ func (r *RedisClient) Unlock(ctx context.Context, lockKey string, currentProcess
 func (r *RedisClient) AddHook(hook redis.Hook) {
 	r.client.AddHook(hook)
 }
+
+func (r *RedisClient) GetClient() redis.UniversalClient {
+	return r.client
+}
