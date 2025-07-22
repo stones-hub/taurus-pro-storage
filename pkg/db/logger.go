@@ -176,7 +176,7 @@ func (l *DbLogger) Info(ctx context.Context, msg string, data ...interface{}) {
 		message := fmt.Sprintf(msg, data...)
 		formattedMessage := l.formatter(logger.Info, message)
 		// l.writer.Print(formattedMessage)
-		l.writer.Writer().Write([]byte(formattedMessage))
+		l.writer.Writer().Write([]byte(formattedMessage + "\n"))
 	}
 }
 
@@ -186,7 +186,7 @@ func (l *DbLogger) Warn(ctx context.Context, msg string, data ...interface{}) {
 		message := fmt.Sprintf(msg, data...)
 		formattedMessage := l.formatter(logger.Warn, message)
 		// l.writer.Print(formattedMessage)
-		l.writer.Writer().Write([]byte(formattedMessage))
+		l.writer.Writer().Write([]byte(formattedMessage + "\n"))
 	}
 }
 
@@ -196,7 +196,7 @@ func (l *DbLogger) Error(ctx context.Context, msg string, data ...interface{}) {
 		message := fmt.Sprintf(msg, data...)
 		formattedMessage := l.formatter(logger.Error, message)
 		// l.writer.Print(formattedMessage)
-		l.writer.Writer().Write([]byte(formattedMessage))
+		l.writer.Writer().Write([]byte(formattedMessage + "\n"))
 	}
 }
 
@@ -229,7 +229,7 @@ func (l *DbLogger) Trace(ctx context.Context, begin time.Time, fc func() (sql st
 
 	formattedMessage := l.formatter(level, message)
 	// l.writer.Print(formattedMessage)
-	l.writer.Writer().Write([]byte(formattedMessage))
+	l.writer.Writer().Write([]byte(formattedMessage + "\n"))
 }
 
 // 确保DbLogger实现了gorm.io/gorm/logger.Interface接口, 只是用于检测DbLogger是否实现了gorm.io/gorm/logger.Interface接口, 虽然我觉得我们已经实现了，但是还是需要检测一下，严谨

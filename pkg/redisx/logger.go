@@ -213,7 +213,7 @@ func (rl *RedisLogger) log(level LogLevel, format string, args ...interface{}) {
 		message := fmt.Sprintf(format, args...)
 		formattedMessage := rl.formatter(level, message)
 		// rl.logger.Print(formattedMessage)
-		rl.logger.Writer().Write([]byte(formattedMessage))
+		rl.logger.Writer().Write([]byte(formattedMessage + "\n"))
 	}
 }
 
