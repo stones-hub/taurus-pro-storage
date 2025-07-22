@@ -66,7 +66,7 @@ func logLevelToString(level logger.LogLevel) string {
 
 // DefaultLogFormatter 默认日志格式化函数
 func DefaultLogFormatter(level logger.LogLevel, message string) string {
-	return fmt.Sprintf("[%s] %s", logLevelToString(level), message)
+	return fmt.Sprintf("%s [%s] %s", time.Now().Format(time.DateTime), logLevelToString(level), message)
 }
 
 // JSONLogFormatter JSON格式的日志格式化函数

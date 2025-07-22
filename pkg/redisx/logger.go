@@ -132,7 +132,7 @@ func WithLogFormatter(formatter LogFormatter) RedisLoggerOption {
 
 // DefaultLogFormatter 默认日志格式化函数
 func DefaultLogFormatter(level LogLevel, message string) string {
-	return fmt.Sprintf("[%s] %s", level.String(), message)
+	return fmt.Sprintf("%s [%s] %s", time.Now().Format(time.DateTime), level.String(), message)
 }
 
 // JSONLogFormatter JSON格式的日志格式化函数
