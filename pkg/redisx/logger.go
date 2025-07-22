@@ -212,7 +212,8 @@ func (rl *RedisLogger) log(level LogLevel, format string, args ...interface{}) {
 	if level >= rl.level {
 		message := fmt.Sprintf(format, args...)
 		formattedMessage := rl.formatter(level, message)
-		rl.logger.Print(formattedMessage)
+		// rl.logger.Print(formattedMessage)
+		rl.logger.Writer().Write([]byte(formattedMessage))
 	}
 }
 
