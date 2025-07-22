@@ -1,0 +1,36 @@
+2025/07/22 14:54:06 [INFO] Redis dialed tcp localhost:6379 in 3.896768ms
+2025/07/22 14:54:06 [INFO] Redis dialed tcp localhost:6379 in 3.967468ms
+2025/07/22 14:54:06 [INFO] Redis dialed tcp localhost:6379 in 4.061962ms
+2025/07/22 14:54:06 [ERROR] Redis command failed: [hello 3] in 1.879584ms, error: ERR unknown command `hello`, with args beginning with: `3`, 
+2025/07/22 14:54:06 [ERROR] Redis pipeline failed with 2 commands in 2.59523ms, error: ERR Syntax error, try CLIENT (LIST | KILL | GETNAME | SETNAME | PAUSE | REPLY)
+2025/07/22 14:54:06 [INFO] Redis command completed: [ping] in 12.424515ms
+2025/07/22 14:54:06 [INFO] Redis command completed: [set test_log_default test_value ex 60] in 342.396µs
+2025/07/22 14:54:06 [INFO] Redis command completed: [get test_log_default] in 156.366µs
+2025/07/22 14:54:06 [INFO] Redis command completed: [hset hash_test_log_default field1 value1] in 221.009µs
+2025/07/22 14:54:06 [INFO] Redis command completed: [hget hash_test_log_default field1] in 225.938µs
+2025/07/22 14:54:06 [INFO] Redis command completed: [incr counter_test_log_default] in 201.422µs
+2025/07/22 14:54:06 [INFO] Redis command completed: [del test_log_default hash_test_log_default counter_test_log_default] in 191.87µs
+2025/07/22 15:08:39 [INFO] Redis dialed tcp localhost:6379 in 773.693µs
+2025/07/22 15:08:39 [INFO] Redis dialed tcp localhost:6379 in 813.687µs
+2025/07/22 15:08:39 [INFO] Redis dialed tcp localhost:6379 in 747.943µs
+2025/07/22 15:08:39 [ERROR] Redis command failed: [hello 3] in 2.11629ms, error: ERR unknown command `hello`, with args beginning with: `3`, 
+2025/07/22 15:08:39 [ERROR] Redis pipeline failed with 2 commands in 457.361µs, error: ERR Syntax error, try CLIENT (LIST | KILL | GETNAME | SETNAME | PAUSE | REPLY)
+2025/07/22 15:08:39 [INFO] Redis command completed: [ping] in 10.076555ms
+2025/07/22 15:08:39 [INFO] Redis command completed: [set test_log_default test_value ex 60] in 166.023µs
+2025/07/22 15:08:39 [INFO] Redis command completed: [get test_log_default] in 109.041µs
+2025/07/22 15:08:39 [INFO] Redis command completed: [hset hash_test_log_default field1 value1] in 157.555µs
+2025/07/22 15:08:39 [INFO] Redis command completed: [hget hash_test_log_default field1] in 127.729µs
+2025/07/22 15:08:39 [INFO] Redis command completed: [incr counter_test_log_default] in 98.672µs
+2025/07/22 15:08:39 [INFO] Redis command completed: [del test_log_default hash_test_log_default counter_test_log_default] in 116.96µs
+2025/07/22 15:12:43 [INFO] Redis dialed tcp localhost:6379 in 4.025597ms
+2025/07/22 15:12:43 [INFO] Redis dialed tcp localhost:6379 in 4.01052ms
+2025/07/22 15:12:43 [INFO] Redis dialed tcp localhost:6379 in 4.168795ms
+2025/07/22 15:12:43 [ERROR] Redis command failed: [hello 3] in 2.284623ms, error: ERR unknown command `hello`, with args beginning with: `3`, 
+2025/07/22 15:12:43 [ERROR] Redis pipeline failed with 2 commands in 555.666µs, error: ERR Syntax error, try CLIENT (LIST | KILL | GETNAME | SETNAME | PAUSE | REPLY)
+2025/07/22 15:12:43 [INFO] Redis command completed: [ping] in 9.0179ms
+2025/07/22 15:12:43 [INFO] Redis command completed: [set test_log_default test_value ex 60] in 338.212µs
+2025/07/22 15:12:43 [INFO] Redis command completed: [get test_log_default] in 331.622µs
+2025/07/22 15:12:43 [INFO] Redis command completed: [hset hash_test_log_default field1 value1] in 183.022µs
+2025/07/22 15:12:43 [INFO] Redis command completed: [hget hash_test_log_default field1] in 147.173µs
+2025/07/22 15:12:43 [INFO] Redis command completed: [incr counter_test_log_default] in 159.64µs
+2025/07/22 15:12:43 [INFO] Redis command completed: [del test_log_default hash_test_log_default counter_test_log_default] in 144.986µs

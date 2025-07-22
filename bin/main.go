@@ -160,11 +160,26 @@ func main() {
 	// 第六部分：Redis 缓存示例
 	fmt.Println("\n=== Redis 缓存示例 ===")
 
-	// 初始化 Redis
+	// 创建Redis日志记录器（使用JSON格式）
+	redisLogger, err := redisx.NewRedisLogger(
+		redisx.WithLogFilePath("./logs/redis/redis.log"),
+		redisx.WithLogLevel(redisx.LogLevelInfo),
+		redisx.WithLogMaxSize(100),
+		redisx.WithLogMaxBackups(10),
+		redisx.WithLogMaxAge(30),
+		redisx.WithLogCompress(true),
+		redisx.WithLogFormatter(redisx.JSONLogFormatter), // 使用JSON格式
+	)
+	if err != nil {
+		log.Printf("创建Redis日志记录器失败: %v", err)
+	}
+
+	// 初始化 Redis（带日志）
 	err = redisx.InitRedis(
 		redisx.WithAddrs("localhost:6379"),
 		redisx.WithPassword(""),
 		redisx.WithDB(0),
+		redisx.WithLogging(redisLogger),
 	)
 	if err != nil {
 		log.Printf("Redis 初始化失败: %v", err)

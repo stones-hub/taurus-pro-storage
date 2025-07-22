@@ -45,6 +45,8 @@ type Options struct {
 	ReadTimeout  time.Duration // 读取超时时间
 	WriteTimeout time.Duration // 写入超时时间
 	MaxRetries   int           // 最大重试次数
+	EnableLog    bool          // 是否启用日志
+	Logger       *RedisLogger  // 日志记录器
 }
 
 // Option 定义配置选项函数类型
@@ -61,6 +63,8 @@ func DefaultOptions() *Options {
 		ReadTimeout:  3 * time.Second,
 		WriteTimeout: 3 * time.Second,
 		MaxRetries:   3,
+		EnableLog:    false,
+		Logger:       nil,
 	}
 }
 
@@ -115,6 +119,14 @@ func WithMaxRetries(n int) Option {
 	}
 }
 
+// WithLogging 启用日志记录
+func WithLogging(logger *RedisLogger) Option {
+	return func(o *Options) {
+		o.EnableLog = true
+		o.Logger = logger
+	}
+}
+
 // InitRedis 初始化Redis客户端
 func InitRedis(opts ...Option) error {
 	// 使用默认配置
@@ -154,6 +166,12 @@ func InitRedis(opts ...Option) error {
 			WriteTimeout: options.WriteTimeout,
 			MaxRetries:   options.MaxRetries,
 		})
+	}
+
+	// 如果启用了日志，添加日志Hook
+	if options.EnableLog && options.Logger != nil {
+		logHook := NewRedisLogHook(options.Logger)
+		client.AddHook(logHook)
 	}
 
 	// 测试连接

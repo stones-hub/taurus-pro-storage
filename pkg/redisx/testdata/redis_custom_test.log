@@ -1,0 +1,36 @@
+2025/07/22 14:54:06 CUSTOM[INFO] Redis dialed tcp localhost:6379 in 1.587895ms
+2025/07/22 14:54:06 CUSTOM[INFO] Redis dialed tcp localhost:6379 in 1.597353ms
+2025/07/22 14:54:06 CUSTOM[INFO] Redis dialed tcp localhost:6379 in 1.673004ms
+2025/07/22 14:54:06 CUSTOM[ERROR] Redis command failed: [hello 3] in 280.081µs, error: ERR unknown command `hello`, with args beginning with: `3`, 
+2025/07/22 14:54:06 CUSTOM[ERROR] Redis pipeline failed with 2 commands in 182.012µs, error: ERR Syntax error, try CLIENT (LIST | KILL | GETNAME | SETNAME | PAUSE | REPLY)
+2025/07/22 14:54:06 CUSTOM[INFO] Redis command completed: [ping] in 3.321449ms
+2025/07/22 14:54:06 CUSTOM[INFO] Redis command completed: [set test_log_custom test_value ex 60] in 209.763µs
+2025/07/22 14:54:06 CUSTOM[INFO] Redis command completed: [get test_log_custom] in 135.827µs
+2025/07/22 14:54:06 CUSTOM[INFO] Redis command completed: [hset hash_test_log_custom field1 value1] in 163.816µs
+2025/07/22 14:54:06 CUSTOM[INFO] Redis command completed: [hget hash_test_log_custom field1] in 148.69µs
+2025/07/22 14:54:06 CUSTOM[INFO] Redis command completed: [incr counter_test_log_custom] in 123.086µs
+2025/07/22 14:54:06 CUSTOM[INFO] Redis command completed: [del test_log_custom hash_test_log_custom counter_test_log_custom] in 146.843µs
+2025/07/22 15:08:39 CUSTOM[INFO] Redis dialed tcp localhost:6379 in 986.313µs
+2025/07/22 15:08:39 CUSTOM[INFO] Redis dialed tcp localhost:6379 in 1.05165ms
+2025/07/22 15:08:39 CUSTOM[INFO] Redis dialed tcp localhost:6379 in 1.050573ms
+2025/07/22 15:08:39 CUSTOM[ERROR] Redis command failed: [hello 3] in 194.986µs, error: ERR unknown command `hello`, with args beginning with: `3`, 
+2025/07/22 15:08:39 CUSTOM[ERROR] Redis pipeline failed with 2 commands in 138.403µs, error: ERR Syntax error, try CLIENT (LIST | KILL | GETNAME | SETNAME | PAUSE | REPLY)
+2025/07/22 15:08:39 CUSTOM[INFO] Redis command completed: [ping] in 2.169262ms
+2025/07/22 15:08:39 CUSTOM[INFO] Redis command completed: [set test_log_custom test_value ex 60] in 162.571µs
+2025/07/22 15:08:39 CUSTOM[INFO] Redis command completed: [get test_log_custom] in 417.622µs
+2025/07/22 15:08:39 CUSTOM[INFO] Redis command completed: [hset hash_test_log_custom field1 value1] in 199.176µs
+2025/07/22 15:08:39 CUSTOM[INFO] Redis command completed: [hget hash_test_log_custom field1] in 117.472µs
+2025/07/22 15:08:39 CUSTOM[INFO] Redis command completed: [incr counter_test_log_custom] in 170.281µs
+2025/07/22 15:08:39 CUSTOM[INFO] Redis command completed: [del test_log_custom hash_test_log_custom counter_test_log_custom] in 167.311µs
+2025/07/22 15:12:43 CUSTOM[INFO] Redis dialed tcp localhost:6379 in 1.016271ms
+2025/07/22 15:12:43 CUSTOM[INFO] Redis dialed tcp localhost:6379 in 1.069776ms
+2025/07/22 15:12:43 CUSTOM[INFO] Redis dialed tcp localhost:6379 in 1.086319ms
+2025/07/22 15:12:43 CUSTOM[ERROR] Redis command failed: [hello 3] in 179.419µs, error: ERR unknown command `hello`, with args beginning with: `3`, 
+2025/07/22 15:12:43 CUSTOM[ERROR] Redis pipeline failed with 2 commands in 145.828µs, error: ERR Syntax error, try CLIENT (LIST | KILL | GETNAME | SETNAME | PAUSE | REPLY)
+2025/07/22 15:12:43 CUSTOM[INFO] Redis command completed: [ping] in 2.116784ms
+2025/07/22 15:12:43 CUSTOM[INFO] Redis command completed: [set test_log_custom test_value ex 60] in 146.711µs
+2025/07/22 15:12:43 CUSTOM[INFO] Redis command completed: [get test_log_custom] in 161.115µs
+2025/07/22 15:12:43 CUSTOM[INFO] Redis command completed: [hset hash_test_log_custom field1 value1] in 372.75µs
+2025/07/22 15:12:43 CUSTOM[INFO] Redis command completed: [hget hash_test_log_custom field1] in 187.321µs
+2025/07/22 15:12:43 CUSTOM[INFO] Redis command completed: [incr counter_test_log_custom] in 370.298µs
+2025/07/22 15:12:43 CUSTOM[INFO] Redis command completed: [del test_log_custom hash_test_log_custom counter_test_log_custom] in 175.056µs

@@ -1,0 +1,4 @@
+2025/07/22 14:54:15 [ERROR] Redis command failed: [hello 3] in 213.709µs, error: ERR unknown command `hello`, with args beginning with: `3`, 
+2025/07/22 14:54:15 [ERROR] Redis pipeline failed with 2 commands in 235.641µs, error: ERR Syntax error, try CLIENT (LIST | KILL | GETNAME | SETNAME | PAUSE | REPLY)
+2025/07/22 15:08:40 [ERROR] Redis command failed: [hello 3] in 253.528µs, error: ERR unknown command `hello`, with args beginning with: `3`, 
+2025/07/22 15:08:40 [ERROR] Redis pipeline failed with 2 commands in 164.412µs, error: ERR Syntax error, try CLIENT (LIST | KILL | GETNAME | SETNAME | PAUSE | REPLY)
