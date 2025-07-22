@@ -27,152 +27,183 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // DBConnections stores multiple database connections
 var dbConnections = make(map[string]*gorm.DB)
 
-// DbOptions 定义单个数据库的配置
-type DbOptions struct {
-	DBName          string        // 数据库连接名称
-	DBType          string        // 数据库类型：postgres, mysql, sqlite
-	DSN             string        // 数据库连接字符串
-	MaxOpenConns    int           // 最大打开连接数，默认 25
-	MaxIdleConns    int           // 最大空闲连接数，默认 25
-	ConnMaxLifetime time.Duration // 连接最大生命周期，默认 5 分钟
-	MaxRetries      int           // 连接重试次数，默认 3
-	RetryDelay      int           // 重试延迟（秒），默认 1
-	LoggerName      string        // 日志名称
+// Options 数据库配置选项
+type Options struct {
+	DBName          string           // 数据库连接名称
+	DBType          string           // 数据库类型：postgres, mysql, sqlite
+	DSN             string           // 数据库连接字符串
+	MaxOpenConns    int              // 最大打开连接数，默认 25
+	MaxIdleConns    int              // 最大空闲连接数，默认 25
+	ConnMaxLifetime time.Duration    // 连接最大生命周期，默认 5 分钟
+	MaxRetries      int              // 连接重试次数，默认 3
+	RetryDelay      int              // 重试延迟（秒），默认 1
+	Logger          logger.Interface // GORM日志记录器，如果为nil则使用默认
 }
 
-type DbOption func(*DbOptions)
+type Option func(*Options)
 
 // WithMaxOpenConns 设置最大打开连接数
-func WithMaxOpenConns(n int) DbOption {
-	return func(o *DbOptions) {
+func WithMaxOpenConns(n int) Option {
+	return func(o *Options) {
 		o.MaxOpenConns = n
 	}
 }
 
 // WithMaxIdleConns 设置最大空闲连接数
-func WithMaxIdleConns(n int) DbOption {
-	return func(o *DbOptions) {
+func WithMaxIdleConns(n int) Option {
+	return func(o *Options) {
 		o.MaxIdleConns = n
 	}
 }
 
 // WithConnMaxLifetime 设置连接最大生命周期
-func WithConnMaxLifetime(d time.Duration) DbOption {
-	return func(o *DbOptions) {
+func WithConnMaxLifetime(d time.Duration) Option {
+	return func(o *Options) {
 		o.ConnMaxLifetime = d
 	}
 }
 
 // WithMaxRetries 设置最大重试次数
-func WithMaxRetries(n int) DbOption {
-	return func(o *DbOptions) {
+func WithMaxRetries(n int) Option {
+	return func(o *Options) {
 		o.MaxRetries = n
 	}
 }
 
 // WithRetryDelay 设置重试延迟
-func WithRetryDelay(n int) DbOption {
-	return func(o *DbOptions) {
+func WithRetryDelay(n int) Option {
+	return func(o *Options) {
 		o.RetryDelay = n
 	}
 }
 
-// WithLoggerName 设置日志名称
-func WithLoggerName(name string) DbOption {
-	return func(o *DbOptions) {
-		o.LoggerName = name
+// WithLogger 设置GORM日志记录器
+func WithLogger(logger logger.Interface) Option {
+	return func(o *Options) {
+		o.Logger = logger
 	}
 }
 
-// NewDbOptions 创建数据库配置
-func NewDbOptions(dbName, dbType, dsn string, opts ...DbOption) DbOptions {
-	options := DbOptions{
-		DBName:          dbName,
-		DBType:          dbType,
-		DSN:             dsn,
+// WithDBName 设置数据库连接名称
+func WithDBName(dbName string) Option {
+	return func(o *Options) {
+		o.DBName = dbName
+	}
+}
+
+// WithDBType 设置数据库类型
+func WithDBType(dbType string) Option {
+	return func(o *Options) {
+		o.DBType = dbType
+	}
+}
+
+// WithDSN 设置数据库连接字符串
+func WithDSN(dsn string) Option {
+	return func(o *Options) {
+		o.DSN = dsn
+	}
+}
+
+// DefaultOptions 返回默认配置
+func DefaultOptions() *Options {
+	return &Options{
+		DBName:          "default",
+		DBType:          "sqlite",
+		DSN:             "./data/db.sqlite",
 		MaxOpenConns:    25,
 		MaxIdleConns:    25,
 		ConnMaxLifetime: 5 * time.Minute,
 		MaxRetries:      3,
 		RetryDelay:      1,
-		LoggerName:      "default",
+		Logger:          nil, // 默认使用nil，表示使用GORM默认日志
 	}
-
-	for _, opt := range opts {
-		opt(&options)
-	}
-
-	return options
 }
 
-// InitDB 初始化数据库连接
-func InitDB(options ...DbOptions) error {
-	for _, opt := range options {
-		if opt.DBName == "" {
-			return fmt.Errorf("database name cannot be empty")
-		}
+// InitDB 初始化单个数据库连接
+func InitDB(opts ...Option) error {
+	options := DefaultOptions()
 
-		if _, ok := dbConnections[opt.DBName]; ok {
-			return fmt.Errorf("database connection '%s' already exists", opt.DBName)
-		}
-
-		// 创建数据库连接
-		var db *gorm.DB
-		var err error
-
-		logger, err := GetLogger(opt.LoggerName).Build()
-		if err != nil {
-			return fmt.Errorf("failed to get logger: %v", err)
-		}
-
-		// 重试连接逻辑
-		for i := 0; i < opt.MaxRetries; i++ {
-			switch opt.DBType {
-			case "postgres":
-				db, err = gorm.Open(postgres.Open(opt.DSN), &gorm.Config{Logger: logger})
-			case "mysql":
-				db, err = gorm.Open(mysql.Open(opt.DSN), &gorm.Config{Logger: logger})
-			case "sqlite":
-				db, err = gorm.Open(sqlite.Open(opt.DSN), &gorm.Config{Logger: logger})
-			default:
-				return fmt.Errorf("unsupported database type: %s", opt.DBType)
-			}
-
-			if err == nil {
-				break
-			}
-
-			log.Printf("Failed to connect to database: %v. Retrying in %d seconds...", err, opt.RetryDelay)
-			time.Sleep(time.Duration(opt.RetryDelay) * time.Second)
-		}
-
-		if err != nil {
-			return fmt.Errorf("failed to connect to database after %d attempts: %v", opt.MaxRetries, err)
-		}
-
-		// 设置连接池
-		sqlDB, err := db.DB()
-		if err != nil {
-			return fmt.Errorf("failed to get database from GORM: %v", err)
-		}
-
-		sqlDB.SetMaxOpenConns(opt.MaxOpenConns)
-		sqlDB.SetMaxIdleConns(opt.MaxIdleConns)
-		sqlDB.SetConnMaxLifetime(opt.ConnMaxLifetime)
-
-		// 存储连接
-		dbConnections[opt.DBName] = db
-		log.Printf("Database connection '%s' established", opt.DBName)
+	// 应用自定义配置
+	for _, opt := range opts {
+		opt(options)
 	}
+
+	// 检查必要参数
+	if options.DBName == "" {
+		return fmt.Errorf("database name cannot be empty")
+	}
+	if options.DSN == "" {
+		return fmt.Errorf("database DSN cannot be empty")
+	}
+
+	// 检查连接是否已存在
+	if _, ok := dbConnections[options.DBName]; ok {
+		return fmt.Errorf("database connection '%s' already exists", options.DBName)
+	}
+
+	// 如果日志记录器为nil，则使用默认日志记录器
+	if options.Logger == nil {
+		options.Logger = NewDbLogger(
+			WithLogFilePath("./logs/db/db.log"),
+			WithLogLevel(logger.Info),
+			WithLogFormatter(DefaultLogFormatter),
+		)
+	}
+
+	// 创建数据库连接
+	var db *gorm.DB
+	var err error
+
+	// 重试连接逻辑
+	for i := 0; i < options.MaxRetries; i++ {
+		switch options.DBType {
+		case "postgres":
+			db, err = gorm.Open(postgres.Open(options.DSN), &gorm.Config{Logger: options.Logger})
+		case "mysql":
+			db, err = gorm.Open(mysql.Open(options.DSN), &gorm.Config{Logger: options.Logger})
+		case "sqlite":
+			db, err = gorm.Open(sqlite.Open(options.DSN), &gorm.Config{Logger: options.Logger})
+		default:
+			return fmt.Errorf("unsupported database type: %s", options.DBType)
+		}
+
+		if err == nil {
+			break
+		}
+
+		// 重试连接
+		log.Printf("Failed to connect to database: %v. Retrying in %d seconds...", err, options.RetryDelay)
+		time.Sleep(time.Duration(options.RetryDelay) * time.Second)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to connect to database after %d attempts: %v", options.MaxRetries, err)
+	}
+
+	// 设置连接池
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("failed to get database from GORM: %v", err)
+	}
+
+	sqlDB.SetMaxOpenConns(options.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(options.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(options.ConnMaxLifetime)
+
+	// 存储连接
+	dbConnections[options.DBName] = db
+	log.Printf("Database connection '%s' established", options.DBName)
 	return nil
 }
 
-// GetDB retrieves a database connection by name
+// GetDB 获取数据库连接
 func GetDB(dbName string) (*gorm.DB, error) {
 	db, exists := dbConnections[dbName]
 	if !exists {
@@ -181,6 +212,7 @@ func GetDB(dbName string) (*gorm.DB, error) {
 	return db, nil
 }
 
+// DbList 获取所有数据库连接
 func DbList() map[string]*gorm.DB {
 	return dbConnections
 }

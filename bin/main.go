@@ -2,210 +2,235 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
 	"github.com/stones-hub/taurus-pro-storage/pkg/db"
 	"github.com/stones-hub/taurus-pro-storage/pkg/redisx"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // User 用户模型
 type User struct {
-	ID        uint   `gorm:"primarykey"`
-	Name      string `gorm:"size:100;not null"`
-	Email     string `gorm:"size:100;uniqueIndex"`
-	Age       int
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index"`
-}
-
-// Order 订单模型
-type Order struct {
-	ID        uint `gorm:"primarykey"`
-	UserID    uint
-	Amount    float64
-	Status    string `gorm:"size:20"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index"`
+	ID   uint   `gorm:"primarykey"`
+	Name string `gorm:"size:255;not null"`
+	Age  int    `gorm:"not null"`
 }
 
 func main() {
-	// 第一部分：初始化数据库
-	fmt.Println("\n=== 初始化数据库 ===")
+	log.Println("=== Taurus Pro Storage 示例程序 ===")
 
-	// MySQL 配置
-	mysqlOpts := db.NewDbOptions(
-		"mysql_db", // 数据库连接名称
-		"mysql",    // 数据库类型
-		"root:123456@tcp(127.0.0.1:3306)/test?charset=utf8mb4&parseTime=True&loc=Local", // DSN
+	// 1. 初始化Redis（使用JSON格式日志）
+	log.Println("\n1. 初始化Redis...")
+
+	// 创建Redis日志记录器
+	redisLogger, err := redisx.NewRedisLogger(
+		redisx.WithLogFilePath("./logs/redis/redis.log"),
+		redisx.WithLogLevel(redisx.LogLevelInfo),
+		redisx.WithLogFormatter(redisx.JSONLogFormatter),
+	)
+	if err != nil {
+		log.Fatalf("创建Redis日志记录器失败: %v", err)
+	}
+
+	if err := redisx.InitRedis(
+		redisx.WithAddrs("127.0.0.1:6379"),
+		redisx.WithPassword(""),
+		redisx.WithDB(0),
+		redisx.WithPoolSize(10),
+		redisx.WithMinIdleConns(5),
+		redisx.WithTimeout(5*time.Second, 3*time.Second, 3*time.Second),
+		redisx.WithMaxRetries(3),
+		redisx.WithLogging(redisLogger),
+	); err != nil {
+		log.Fatalf("Redis初始化失败: %v", err)
+	}
+
+	// 测试Redis操作
+	ctx := context.Background()
+	redisx.Redis.Set(ctx, "test_key", "test_value", time.Minute)
+	value, _ := redisx.Redis.Get(ctx, "test_key")
+	log.Printf("Redis测试: test_key = %s", value)
+
+	// 2. 初始化数据库连接（使用默认日志记录器）
+	log.Println("\n2. 初始化数据库连接（默认日志）...")
+	if err := db.InitDB(
+		db.WithDBName("mysql_db"),
+		db.WithDBType("mysql"),
+		db.WithDSN("apps:apps@tcp(127.0.0.1:3306)/sys?charset=utf8mb4&parseTime=True&loc=Local"),
 		db.WithMaxOpenConns(10),
 		db.WithMaxIdleConns(5),
 		db.WithConnMaxLifetime(time.Hour),
 		db.WithMaxRetries(3),
 		db.WithRetryDelay(1),
+		db.WithLogger(nil), // 使用默认日志记录器
+	); err != nil {
+		log.Printf("数据库初始化失败: %v", err)
+	}
+
+	// 3. 初始化数据库连接（使用JSON格式日志记录器）
+	log.Println("\n3. 初始化数据库连接（JSON格式日志）...")
+	jsonLogger := db.NewDbLogger(
+		db.WithLogFilePath("./logs/db/db.json.log"),
+		db.WithLogLevel(logger.Info),
+		db.WithLogFormatter(db.JSONLogFormatter),
 	)
 
-	// 初始化数据库连接
-	if err := db.InitDB(mysqlOpts); err != nil {
-		log.Fatalf("数据库初始化失败: %v", err)
+	if err := db.InitDB(
+		db.WithDBName("mysql_json_db"),
+		db.WithDBType("mysql"),
+		db.WithDSN("apps:apps@tcp(127.0.0.1:3306)/sys?charset=utf8mb4&parseTime=True&loc=Local"),
+		db.WithMaxOpenConns(10),
+		db.WithMaxIdleConns(5),
+		db.WithConnMaxLifetime(time.Hour),
+		db.WithMaxRetries(3),
+		db.WithRetryDelay(1),
+		db.WithLogger(jsonLogger), // 使用JSON格式日志记录器
+	); err != nil {
+		log.Printf("数据库初始化失败: %v", err)
 	}
+
+	// 4. 初始化数据库连接（使用简单格式日志记录器）
+	log.Println("\n4. 初始化数据库连接（简单格式日志）...")
+	simpleLogger := db.NewDbLogger(
+		db.WithLogFilePath("./logs/db/db.simple.log"),
+		db.WithLogLevel(logger.Warn), // 只记录警告和错误
+		db.WithLogFormatter(func(level logger.LogLevel, message string) string {
+			return db.LogLevelToString(level) + ": " + message
+		}),
+	)
+
+	if err := db.InitDB(
+		db.WithDBName("mysql_simple_db"),
+		db.WithDBType("mysql"),
+		db.WithDSN("apps:apps@tcp(127.0.0.1:3306)/sys?charset=utf8mb4&parseTime=True&loc=Local"),
+		db.WithMaxOpenConns(10),
+		db.WithMaxIdleConns(5),
+		db.WithConnMaxLifetime(time.Hour),
+		db.WithMaxRetries(3),
+		db.WithRetryDelay(1),
+		db.WithLogger(simpleLogger), // 使用简单格式日志记录器
+	); err != nil {
+		log.Printf("数据库初始化失败: %v", err)
+	}
+
+	// 5. 初始化数据库连接（使用自定义格式化器）
+	log.Println("\n5. 初始化数据库连接（自定义格式日志）...")
+	customFormatter := func(level logger.LogLevel, message string) string {
+		return db.LogLevelToString(level) + " | " + message + " | " + time.Now().Format("2006-01-02 15:04:05")
+	}
+
+	customLogger := db.NewDbLogger(
+		db.WithLogFilePath("./logs/db/db.custom.log"),
+		db.WithLogLevel(logger.Info),
+		db.WithLogFormatter(customFormatter),
+	)
+
+	if err := db.InitDB(
+		db.WithDBName("mysql_custom_db"),
+		db.WithDBType("mysql"),
+		db.WithDSN("apps:apps@tcp(127.0.0.1:3306)/sys?charset=utf8mb4&parseTime=True&loc=Local"),
+		db.WithMaxOpenConns(10),
+		db.WithMaxIdleConns(5),
+		db.WithConnMaxLifetime(time.Hour),
+		db.WithMaxRetries(3),
+		db.WithRetryDelay(1),
+		db.WithLogger(customLogger), // 使用自定义格式日志记录器
+	); err != nil {
+		log.Printf("数据库初始化失败: %v", err)
+	}
+
+	// 6. 测试数据库操作
+	log.Println("\n6. 测试数据库操作...")
 
 	// 获取数据库连接
 	mysqlDB, err := db.GetDB("mysql_db")
 	if err != nil {
-		log.Fatalf("获取数据库连接失败: %v", err)
-	}
-
-	// 自动迁移表结构
-	if err := mysqlDB.AutoMigrate(&User{}, &Order{}); err != nil {
-		log.Fatalf("数据库迁移失败: %v", err)
-	}
-
-	// 第二部分：基本的 CRUD 操作
-	fmt.Println("\n=== 基本的 CRUD 操作 ===")
-
-	// 创建用户
-	user := &User{
-		Name:  "张三",
-		Email: "zhangsan@example.com",
-		Age:   25,
-	}
-	if err := db.Create("mysql_db", user); err != nil {
-		log.Printf("创建用户失败: %v", err)
+		log.Printf("获取数据库连接失败: %v", err)
 	} else {
-		fmt.Printf("创建用户成功: ID = %d\n", user.ID)
-	}
+		// 自动迁移表结构
+		mysqlDB.AutoMigrate(&User{})
 
-	// 查询用户
-	var users []User
-	if err := db.Find("mysql_db", &users, "age > ?", 20); err != nil {
-		log.Printf("查询用户失败: %v", err)
-	} else {
-		fmt.Printf("查询到 %d 个用户\n", len(users))
-		for _, u := range users {
-			fmt.Printf("用户: %s, 邮箱: %s\n", u.Name, u.Email)
+		// 创建用户
+		user := User{Name: "张三", Age: 25}
+		if err := db.Create("mysql_db", &user); err != nil {
+			log.Printf("创建用户失败: %v", err)
+		} else {
+			log.Printf("创建用户成功: ID=%d, Name=%s, Age=%d", user.ID, user.Name, user.Age)
+		}
+
+		// 查询用户
+		var users []User
+		if err := db.Find("mysql_db", &users, "age > ?", 20); err != nil {
+			log.Printf("查询用户失败: %v", err)
+		} else {
+			log.Printf("查询到 %d 个用户", len(users))
+		}
+
+		// 更新用户
+		if err := db.Update("mysql_db", &User{ID: 1, Name: "李四", Age: 30}); err != nil {
+			log.Printf("更新用户失败: %v", err)
+		} else {
+			log.Printf("更新用户成功")
+		}
+
+		// 删除用户
+		if err := db.Delete("mysql_db", &User{ID: 1}); err != nil {
+			log.Printf("删除用户失败: %v", err)
+		} else {
+			log.Printf("删除用户成功")
 		}
 	}
 
-	// 更新用户
-	user.Age = 26
-	if err := db.Update("mysql_db", user); err != nil {
-		log.Printf("更新用户失败: %v", err)
-	} else {
-		fmt.Println("更新用户成功")
-	}
-
-	// 第三部分：事务操作
-	fmt.Println("\n=== 事务操作 ===")
+	// 7. 测试事务操作
+	log.Println("\n7. 测试事务操作...")
 	err = db.ExecuteInTransaction("mysql_db", func(tx *gorm.DB) error {
-		// 创建订单
-		order := &Order{
-			UserID: user.ID,
-			Amount: 100.50,
-			Status: "pending",
-		}
-		if err := tx.Create(order).Error; err != nil {
-			return fmt.Errorf("创建订单失败: %v", err)
+		// 在事务中创建用户
+		user1 := User{Name: "王五", Age: 28}
+		if err := tx.Create(&user1).Error; err != nil {
+			return err
 		}
 
-		// 模拟其他操作
-		if order.Amount > 1000 {
-			return fmt.Errorf("订单金额超过限制")
+		user2 := User{Name: "赵六", Age: 32}
+		if err := tx.Create(&user2).Error; err != nil {
+			return err
 		}
 
+		log.Printf("事务中创建了两个用户: ID=%d, ID=%d", user1.ID, user2.ID)
 		return nil
 	})
+
 	if err != nil {
 		log.Printf("事务执行失败: %v", err)
 	} else {
-		fmt.Println("事务执行成功")
+		log.Printf("事务执行成功")
 	}
 
-	// 第四部分：分页查询
-	fmt.Println("\n=== 分页查询 ===")
-	err = db.PaginateQuery("mysql_db", "users", 10, func(records []map[string]interface{}) error {
-		for _, record := range records {
-			fmt.Printf("用户记录: %v\n", record)
-		}
-		return nil
-	})
-	if err != nil {
+	// 8. 测试分页查询
+	log.Println("\n8. 测试分页查询...")
+	var pageUsers []User
+	if err := db.Paginate("mysql_db", &pageUsers, 1, 10, "age > ?", 20); err != nil {
 		log.Printf("分页查询失败: %v", err)
-	}
-
-	// 第五部分：原生 SQL 查询
-	fmt.Println("\n=== 原生 SQL 查询 ===")
-	var result []struct {
-		Name  string
-		Count int
-	}
-	err = db.QuerySQL("mysql_db", &result, `
-		SELECT u.name, COUNT(o.id) as count 
-		FROM users u 
-		LEFT JOIN orders o ON u.id = o.user_id 
-		GROUP BY u.id
-	`)
-	if err != nil {
-		log.Printf("SQL 查询失败: %v", err)
 	} else {
-		for _, r := range result {
-			fmt.Printf("用户 %s 有 %d 个订单\n", r.Name, r.Count)
-		}
+		log.Printf("分页查询成功，返回 %d 条记录", len(pageUsers))
 	}
 
-	// 第六部分：Redis 缓存示例
-	fmt.Println("\n=== Redis 缓存示例 ===")
-
-	// 创建Redis日志记录器（使用JSON格式）
-	redisLogger, err := redisx.NewRedisLogger(
-		redisx.WithLogFilePath("./logs/redis/redis.log"),
-		redisx.WithLogLevel(redisx.LogLevelInfo),
-		redisx.WithLogMaxSize(100),
-		redisx.WithLogMaxBackups(10),
-		redisx.WithLogMaxAge(30),
-		redisx.WithLogCompress(true),
-		redisx.WithLogFormatter(redisx.JSONLogFormatter), // 使用JSON格式
-	)
-	if err != nil {
-		log.Printf("创建Redis日志记录器失败: %v", err)
+	// 9. 显示所有数据库连接
+	log.Println("\n9. 当前数据库连接列表:")
+	dbList := db.DbList()
+	for name, conn := range dbList {
+		log.Printf("  - %s: %v", name, conn)
 	}
 
-	// 初始化 Redis（带日志）
-	err = redisx.InitRedis(
-		redisx.WithAddrs("localhost:6379"),
-		redisx.WithPassword(""),
-		redisx.WithDB(0),
-		redisx.WithLogging(redisLogger),
-	)
-	if err != nil {
-		log.Printf("Redis 初始化失败: %v", err)
-	} else {
-		defer redisx.Redis.Close()
+	// 10. 关闭数据库连接
+	log.Println("\n10. 关闭数据库连接...")
+	db.CloseDB()
 
-		// 使用 Redis 缓存用户信息
-		ctx := context.Background()
-		cacheKey := fmt.Sprintf("user:%d", user.ID)
-
-		err = redisx.Redis.HSet(ctx, cacheKey,
-			"name", user.Name,
-			"email", user.Email,
-			"age", user.Age,
-		)
-		if err != nil {
-			log.Printf("缓存用户信息失败: %v", err)
-		}
-
-		// 从缓存获取用户信息
-		if values, err := redisx.Redis.HGetList(ctx, cacheKey); err != nil {
-			log.Printf("获取缓存失败: %v", err)
-		} else {
-			fmt.Println("从缓存获取的用户信息:", values)
-		}
-	}
-
-	fmt.Println("\n=== 示例运行完成 ===")
+	log.Println("\n=== 示例程序执行完成 ===")
+	log.Println("请查看以下日志文件:")
+	log.Println("  - ./logs/redis/redis.log (Redis JSON格式)")
+	log.Println("  - ./logs/db/db.json.log (数据库JSON格式)")
+	log.Println("  - ./logs/db/db.simple.log (数据库简单格式)")
+	log.Println("  - ./logs/db/db.custom.log (数据库自定义格式)")
 }

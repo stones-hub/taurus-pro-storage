@@ -1,0 +1,11 @@
+2025/07/22 16:36:17 [INFO] [0.168ms] [rows:-1] SELECT DATABASE()
+2025/07/22 16:36:17 [INFO] [3.356ms] [rows:1] SELECT SCHEMA_NAME from Information_schema.SCHEMATA where SCHEMA_NAME LIKE 'sys%' ORDER BY SCHEMA_NAME='sys' DESC,SCHEMA_NAME limit 1
+2025/07/22 16:36:17 [INFO] [3.388ms] [rows:-1] SELECT count(*) FROM information_schema.tables WHERE table_schema = 'sys' AND table_name = 'users' AND table_type = 'BASE TABLE'
+2025/07/22 16:36:17 [INFO] [23.172ms] [rows:0] CREATE TABLE `users` (`id` bigint unsigned AUTO_INCREMENT,`name` varchar(255) NOT NULL,`age` bigint NOT NULL,PRIMARY KEY (`id`))
+2025/07/22 16:36:17 [INFO] [4.377ms] [rows:1] INSERT INTO `users` (`name`,`age`) VALUES ('张三',25)
+2025/07/22 16:36:17 [INFO] [1.187ms] [rows:1] SELECT * FROM `users` WHERE age > 20
+2025/07/22 16:36:17 [INFO] [3.605ms] [rows:1] UPDATE `users` SET `name`='李四',`age`=30 WHERE `id` = 1
+2025/07/22 16:36:17 [INFO] [2.388ms] [rows:1] DELETE FROM `users` WHERE `users`.`id` = 1
+2025/07/22 16:36:17 [INFO] [0.383ms] [rows:1] INSERT INTO `users` (`name`,`age`) VALUES ('王五',28)
+2025/07/22 16:36:17 [INFO] [0.270ms] [rows:1] INSERT INTO `users` (`name`,`age`) VALUES ('赵六',32)
+2025/07/22 16:36:17 [INFO] [0.427ms] [rows:2] SELECT * FROM `users` WHERE age > 20 LIMIT 10
