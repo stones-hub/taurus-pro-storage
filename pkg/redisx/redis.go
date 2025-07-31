@@ -273,11 +273,6 @@ func (r *RedisClient) Close() error {
 	return r.client.Close()
 }
 
-// Client 获取原始的Redis客户端
-func (r *RedisClient) Client() redis.UniversalClient {
-	return r.client
-}
-
 // Lock 尝试获取一个分布式锁
 func (r *RedisClient) Lock(ctx context.Context, lockKey string, lockValue string, lockExpireTime time.Duration) (bool, error) {
 	// lockExpireTime 锁的过期时间, 必须设置，防止死锁
