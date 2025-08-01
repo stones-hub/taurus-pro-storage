@@ -327,9 +327,7 @@ func (m *Manager) processRetryQueue() {
 			return
 		case <-ticker.C:
 			if err := m.processRetryQueueBatch(); err != nil {
-				if err != redis.Nil {
-					log.Printf("读取重试队列失败: %v\n", err)
-				}
+				log.Printf("读取重试队列失败: %v\n", err)
 			}
 		}
 	}
@@ -342,7 +340,7 @@ func (m *Manager) processRetryQueueBatch() error {
 
 	// 使用延迟队列的PopDelayed方法
 	items, err := m.engine.PopDelayed(ctx, m.config.Retry, m.config.RetryBatch)
-	if err != nil {
+	if err != nil && err != redis.Nil {
 		return fmt.Errorf("pop delayed from retry queue: %w", err)
 	}
 
