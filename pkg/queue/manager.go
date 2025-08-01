@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stones-hub/taurus-pro-storage/pkg/queue/engine"
 	"github.com/stones-hub/taurus-pro-storage/pkg/redisx"
 )
@@ -326,7 +327,9 @@ func (m *Manager) processRetryQueue() {
 			return
 		case <-ticker.C:
 			if err := m.processRetryQueueBatch(); err != nil {
-				log.Printf("Error processing retry queue batch: %v", err)
+				if err != redis.Nil {
+					log.Printf("读取重试队列失败: %v\n", err)
+				}
 			}
 		}
 	}
