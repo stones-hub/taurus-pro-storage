@@ -409,6 +409,6 @@ func (m *Manager) recoverProcessingQueue() error {
 	// 由于Processing队列现在是channel，无法获取所有数据
 	// 在启动时，channel中的数据会自动被Worker消费
 	// 所以这里不需要特殊的恢复逻辑
-	log.Printf("Processing queue recovery not needed (using channel)")
+	// log.Printf("Processing queue recovery not needed (using channel)")
 	return nil
 }
