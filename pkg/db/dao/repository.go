@@ -144,6 +144,11 @@ type Repository[T Entity] interface {
 	// 示例: db := repo.GetDB()
 	GetDB() *gorm.DB
 
+	// GetTableName: 获取表名
+	// 参数: 无
+	// 示例: tableName := repo.GetTableName()
+	GetTableName() string
+
 	// 原生SQL查询
 	// Exec: 执行原生SQL（INSERT、UPDATE、DELETE等）
 	// 参数: ctx - 上下文, sql - SQL语句, args - SQL参数
