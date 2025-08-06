@@ -178,13 +178,16 @@ type Repository[T Entity] interface {
 
 // BaseRepository 基础Repository实现，可以被具体Repository嵌入
 type BaseRepository[T Entity] struct {
-	db *gorm.DB
+	tableName string
+	db        *gorm.DB
 }
 
 // NewBaseRepository 创建新的Repository实例
 func NewBaseRepository[T Entity](db *gorm.DB) Repository[T] {
+	var entity T
 	return &BaseRepository[T]{
-		db: db,
+		tableName: entity.TableName(),
+		db:        db,
 	}
 }
 
@@ -198,7 +201,8 @@ func NewBaseRepositoryWithDB[T Entity]() (Repository[T], error) {
 		return nil, fmt.Errorf("database instance is nil for entity")
 	}
 	return &BaseRepository[T]{
-		db: db,
+		tableName: entity.TableName(),
+		db:        db,
 	}, nil
 }
 
