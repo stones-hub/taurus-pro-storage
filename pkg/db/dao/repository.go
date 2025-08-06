@@ -16,7 +16,7 @@
 // Email: 61647649@qq.com
 // Date: 2025-08-06
 
-package db
+package dao
 
 import (
 	"context"
