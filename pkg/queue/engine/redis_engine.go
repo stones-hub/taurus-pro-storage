@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -23,11 +24,22 @@ func NewRedisEngine(client *redisx.RedisClient) Engine {
 
 // Push 将数据推入队列(source 和 failed)
 func (e *RedisEngine) Push(ctx context.Context, queue string, data []byte) error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("RedisEngine.Push: Recovered from panic: %v", r)
+		}
+	}()
 	return e.client.GetClient().LPush(ctx, queue, data).Err()
 }
 
 // Pop 从队列中弹出数据(source 和 failed)
 func (e *RedisEngine) Pop(ctx context.Context, queue string, timeout time.Duration) ([]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("RedisEngine.Pop: Recovered from panic: %v", r)
+		}
+	}()
+
 	// 使用BRPOP命令从队列中弹出数据, 如果队列为空，则阻塞等待timeout时间
 	result, err := e.client.GetClient().BRPop(ctx, timeout, queue).Result()
 	if err != nil {
@@ -39,6 +51,12 @@ func (e *RedisEngine) Pop(ctx context.Context, queue string, timeout time.Durati
 
 // BatchPop 批量从队列中弹出数据(source 和 failed)
 func (e *RedisEngine) BatchPop(ctx context.Context, queue string, count int, timeout time.Duration) ([][]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("RedisEngine.BatchPop: Recovered from panic: %v", r)
+		}
+	}()
+
 	var result [][]byte
 	for i := 0; i < count; i++ {
 		data, err := e.Pop(ctx, queue, timeout)

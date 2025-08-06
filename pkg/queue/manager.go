@@ -252,6 +252,12 @@ func (m *Manager) GetStats() map[string]interface{} {
 // processFailedQueue 处理失败队列
 func (m *Manager) processFailedQueue() {
 	defer m.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Failed queue processor: Recovered from panic: %v", r)
+		}
+	}()
+
 	ticker := time.NewTicker(m.config.FailedInterval)
 	defer ticker.Stop()
 
@@ -315,6 +321,12 @@ func (m *Manager) processFailedQueueBatch() error {
 // processRetryQueue 处理延迟重试队列
 func (m *Manager) processRetryQueue() {
 	defer m.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Retry queue processor: Recovered from panic: %v", r)
+		}
+	}()
+
 	ticker := time.NewTicker(m.config.RetryInterval)
 	defer ticker.Stop()
 

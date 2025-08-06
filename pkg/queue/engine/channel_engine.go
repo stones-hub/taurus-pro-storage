@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -67,6 +68,12 @@ func (e *ChannelEngine) getOrCreateQueue(queue string) chan []byte {
 
 // Push 将数据推入队列(source 和 failed, processing)
 func (e *ChannelEngine) Push(ctx context.Context, queue string, data []byte) error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ChannelEngine.Push: Recovered from panic: %v", r)
+		}
+	}()
+
 	ch := e.getOrCreateQueue(queue)
 
 	select {
@@ -79,6 +86,12 @@ func (e *ChannelEngine) Push(ctx context.Context, queue string, data []byte) err
 
 // Pop 从队列中弹出数据(source 和 failed, processing)
 func (e *ChannelEngine) Pop(ctx context.Context, queue string, timeout time.Duration) ([]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ChannelEngine.Pop: Recovered from panic: %v", r)
+		}
+	}()
+
 	ch := e.getOrCreateQueue(queue)
 
 	timer := time.NewTimer(timeout)
