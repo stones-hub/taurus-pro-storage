@@ -3,10 +3,10 @@ package engine
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/stones-hub/taurus-pro-common/pkg/recovery"
 	"github.com/stones-hub/taurus-pro-storage/pkg/redisx"
 )
 
@@ -24,21 +24,13 @@ func NewRedisEngine(client *redisx.RedisClient) Engine {
 
 // Push 将数据推入队列(source 和 failed)
 func (e *RedisEngine) Push(ctx context.Context, queue string, data []byte) error {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("RedisEngine.Push: Recovered from panic: %v", r)
-		}
-	}()
+	defer recovery.GlobalPanicRecovery.Recover("数据写入异步队列错误[taurus-pro-storage/pkg/queue/engine/redis_engine.Push()]")
 	return e.client.GetClient().LPush(ctx, queue, data).Err()
 }
 
 // Pop 从队列中弹出数据(source 和 failed)
 func (e *RedisEngine) Pop(ctx context.Context, queue string, timeout time.Duration) ([]byte, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("RedisEngine.Pop: Recovered from panic: %v", r)
-		}
-	}()
+	defer recovery.GlobalPanicRecovery.Recover("数据从异步队列中弹出错误[taurus-pro-storage/pkg/queue/engine/redis_engine.Pop()]")
 
 	// 使用BRPOP命令从队列中弹出数据, 如果队列为空，则阻塞等待timeout时间
 	result, err := e.client.GetClient().BRPop(ctx, timeout, queue).Result()
@@ -51,11 +43,7 @@ func (e *RedisEngine) Pop(ctx context.Context, queue string, timeout time.Durati
 
 // BatchPop 批量从队列中弹出数据(source 和 failed)
 func (e *RedisEngine) BatchPop(ctx context.Context, queue string, count int, timeout time.Duration) ([][]byte, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("RedisEngine.BatchPop: Recovered from panic: %v", r)
-		}
-	}()
+	defer recovery.GlobalPanicRecovery.Recover("数据从异步队列中批量弹出错误[taurus-pro-storage/pkg/queue/engine/redis_engine.BatchPop()]")
 
 	var result [][]byte
 	for i := 0; i < count; i++ {

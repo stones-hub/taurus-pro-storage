@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/stones-hub/taurus-pro-common/pkg/recovery"
 	"github.com/stones-hub/taurus-pro-storage/pkg/queue/engine"
 	"github.com/stones-hub/taurus-pro-storage/pkg/redisx"
 )
@@ -252,11 +253,7 @@ func (m *Manager) GetStats() map[string]interface{} {
 // processFailedQueue 处理失败队列
 func (m *Manager) processFailedQueue() {
 	defer m.wg.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Failed queue processor: Recovered from panic: %v", r)
-		}
-	}()
+	defer recovery.GlobalPanicRecovery.Recover("异步队列失败队列处理协程[taurus-pro-storage/pkg/queue/manager.processFailedQueue()]")
 
 	ticker := time.NewTicker(m.config.FailedInterval)
 	defer ticker.Stop()
@@ -321,11 +318,7 @@ func (m *Manager) processFailedQueueBatch() error {
 // processRetryQueue 处理延迟重试队列
 func (m *Manager) processRetryQueue() {
 	defer m.wg.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Retry queue processor: Recovered from panic: %v", r)
-		}
-	}()
+	defer recovery.GlobalPanicRecovery.Recover("异步队列重试队列处理协程[taurus-pro-storage/pkg/queue/manager.processRetryQueue()]")
 
 	ticker := time.NewTicker(m.config.RetryInterval)
 	defer ticker.Stop()

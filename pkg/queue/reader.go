@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stones-hub/taurus-pro-common/pkg/recovery"
 	"github.com/stones-hub/taurus-pro-storage/pkg/queue/engine"
 )
 
@@ -51,11 +52,7 @@ func (r *Reader) Stop() {
 // run Reader 的主循环
 func (r *Reader) run() {
 	defer r.wg.Done()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			log.Printf("Queue Reader %d: Recovered from panic: %v", r.id, recovered)
-		}
-	}()
+	defer recovery.GlobalPanicRecovery.Recover("异步队列读取器[taurus-pro-storage/pkg/queue/reader.run()]")
 
 	for {
 		select {
