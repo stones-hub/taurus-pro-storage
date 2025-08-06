@@ -211,6 +211,11 @@ func (r *BaseRepository[T]) GetDB() *gorm.DB {
 	return r.db
 }
 
+// GetTableName 获取表名
+func (r *BaseRepository[T]) GetTableName() string {
+	return r.tableName
+}
+
 // Create 创建记录
 // 参数说明:
 //   - ctx: 上下文，用于超时控制和取消
