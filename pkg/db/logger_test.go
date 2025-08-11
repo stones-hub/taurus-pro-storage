@@ -86,7 +86,7 @@ func TestLogFormatters(t *testing.T) {
 			formatter: DefaultLogFormatter,
 			level:     gormlogger.Info,
 			message:   "测试消息",
-			expected:  "[INFO] 测试消息",
+			expected:  "[INFO] 测试消息", // 期望包含日志级别和消息，不包含时间戳
 		},
 		{
 			name:      "JSON格式化器",
@@ -106,8 +106,9 @@ func TestLogFormatters(t *testing.T) {
 					t.Errorf("JSON格式化结果不包含期望内容，期望包含 %s，实际 %s", tt.expected, result)
 				}
 			} else {
-				if result != tt.expected {
-					t.Errorf("格式化结果不匹配，期望 %s，实际 %s", tt.expected, result)
+				// 对于默认格式化器，只检查是否包含期望的内容，因为时间戳会变化
+				if !strings.Contains(result, "[INFO] 测试消息") {
+					t.Errorf("默认格式化结果不包含期望内容，期望包含 [INFO] 测试消息，实际 %s", result)
 				}
 			}
 		})

@@ -1,9 +1,0 @@
-2025/07/22 15:08:40 {"level":"INFO","message":"Redis dialed tcp localhost:6379 in 828.666µs","timestamp":"2025-07-22T15:08:40+08:00"}
-2025/07/22 15:08:40 {"level":"INFO","message":"Redis dialed tcp localhost:6379 in 845.495µs","timestamp":"2025-07-22T15:08:40+08:00"}
-2025/07/22 15:08:40 {"level":"INFO","message":"Redis dialed tcp localhost:6379 in 827.69µs","timestamp":"2025-07-22T15:08:40+08:00"}
-2025/07/22 15:08:40 {"level":"ERROR","message":"Redis command failed: [hello 3] in 128.602µs, error: ERR unknown command `hello`, with args beginning with: `3`, ","timestamp":"2025-07-22T15:08:40+08:00"}
-2025/07/22 15:08:40 {"level":"ERROR","message":"Redis pipeline failed with 2 commands in 172.302µs, error: ERR Syntax error, try CLIENT (LIST | KILL | GETNAME | SETNAME | PAUSE | REPLY)","timestamp":"2025-07-22T15:08:40+08:00"}
-2025/07/22 15:08:40 {"level":"INFO","message":"Redis command completed: [ping] in 1.738876ms","timestamp":"2025-07-22T15:08:40+08:00"}
-2025/07/22 15:08:40 {"level":"INFO","message":"Redis command completed: [set content_test_key content_test_value ex 60] in 150.546µs","timestamp":"2025-07-22T15:08:40+08:00"}
-2025/07/22 15:08:40 {"level":"INFO","message":"Redis command completed: [get content_test_key] in 121.329µs","timestamp":"2025-07-22T15:08:40+08:00"}
-2025/07/22 15:08:40 {"level":"INFO","message":"Redis command completed: [del content_test_key] in 127.426µs","timestamp":"2025-07-22T15:08:40+08:00"}
