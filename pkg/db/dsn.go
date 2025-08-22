@@ -20,6 +20,10 @@ func DSN(dbType, host string, port int, username, password, dbname string, sslmo
 	case "sqlite":
 		// 对于 SQLite，dbname 就是文件路径
 		return dbname
+	case "clickhouse":
+		// clickhouse://username:password@host:port/database?dial_timeout=10s&max_execution_time=60
+		return fmt.Sprintf("clickhouse://%s:%s@%s:%d/%s?dial_timeout=10s&max_execution_time=60",
+			username, password, host, port, dbname)
 	default:
 		return ""
 	}

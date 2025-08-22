@@ -23,6 +23,7 @@ import (
 	"log"
 	"time"
 
+	"gorm.io/driver/clickhouse"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -36,7 +37,7 @@ var dbConnections = make(map[string]*gorm.DB)
 // Options 数据库配置选项
 type Options struct {
 	DBName          string           // 数据库连接名称
-	DBType          string           // 数据库类型：postgres, mysql, sqlite
+	DBType          string           // 数据库类型：postgres, mysql, sqlite, clickhouse
 	DSN             string           // 数据库连接字符串
 	MaxOpenConns    int              // 最大打开连接数，默认 25
 	MaxIdleConns    int              // 最大空闲连接数，默认 25
@@ -170,6 +171,8 @@ func InitDB(opts ...Option) error {
 			db, err = gorm.Open(mysql.Open(options.DSN), &gorm.Config{Logger: options.Logger})
 		case "sqlite":
 			db, err = gorm.Open(sqlite.Open(options.DSN), &gorm.Config{Logger: options.Logger})
+		case "clickhouse":
+			db, err = gorm.Open(clickhouse.Open(options.DSN), &gorm.Config{Logger: options.Logger})
 		default:
 			return fmt.Errorf("unsupported database type: %s", options.DBType)
 		}
