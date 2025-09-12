@@ -7,6 +7,8 @@ require (
 	github.com/redis/go-redis/v9 v9.12.0
 	github.com/stones-hub/taurus-pro-common v0.1.24
 	github.com/stretchr/testify v1.10.0
+	golang.org/x/crypto v0.40.0
+	gorm.io/driver/clickhouse v0.7.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
@@ -33,7 +35,6 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/klauspost/compress v1.17.8 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-sqlite3 v1.14.30 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
@@ -44,10 +45,8 @@ require (
 	github.com/shopspring/decimal v1.4.0 // indirect
 	go.opentelemetry.io/otel v1.26.0 // indirect
 	go.opentelemetry.io/otel/trace v1.26.0 // indirect
-	golang.org/x/crypto v0.40.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	gorm.io/driver/clickhouse v0.7.0 // indirect
 )
