@@ -2,7 +2,6 @@ package queue
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 
@@ -63,9 +62,9 @@ func (r *Reader) run() {
 			if err := r.readOne(); err != nil {
 				// 判断是不是context超时错误
 				if err == context.DeadlineExceeded || err == context.Canceled {
-					log.Printf("Reader.run() warnning: Reader[%d]队列, 管道数据为空(%v), 读取超时, 请忽略。", r.id, err)
+					log.Fatalf("Reader.run() warnning: Reader[%d]队列, 管道数据为空(%v), 读取超时, 请忽略。", r.id, err)
 				} else {
-					log.Printf("Reader.run() error: Reader[%d]队列, 读取数据错误(%v), 请及时检查队列是否正常。", r.id, err)
+					log.Fatalf("Reader.run() error: Reader[%d]队列, 读取数据错误(%v), 请及时检查队列是否正常。", r.id, err)
 				}
 			}
 		}
@@ -83,7 +82,7 @@ func (r *Reader) readOne() error {
 	if err != nil {
 		if err == context.DeadlineExceeded || err == context.Canceled {
 			// 上下文超时或取消, 返回错误
-			return fmt.Errorf("pop data timeout: %w", err)
+			return err
 		}
 		return nil // 无数据，正常返回, 没数据的时候等待的超时时间到了
 	}

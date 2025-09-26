@@ -69,7 +69,7 @@ func (w *Worker) run() {
 				if err == context.DeadlineExceeded || err == context.Canceled {
 					log.Fatalf("Worker.run() warnning: Worker[%d]队列, 管道数据为空(%v), 处理超时, 请忽略。", w.id, err)
 				} else {
-					log.Printf("Worker.run() error: Worker[%d]队列, 处理数据错误(%v), 请及时检查队列是否正常。", w.id, err)
+					log.Fatalf("Worker.run() error: Worker[%d]队列, 处理数据错误(%v), 请及时检查队列是否正常。", w.id, err)
 				}
 			}
 		}
