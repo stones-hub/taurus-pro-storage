@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -101,7 +100,7 @@ func (e *ChannelEngine) Pop(ctx context.Context, queue string, timeout time.Dura
 	case data := <-ch:
 		return data, nil
 	case <-timer.C:
-		return nil, fmt.Errorf("timeout")
+		return nil, context.DeadlineExceeded
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
