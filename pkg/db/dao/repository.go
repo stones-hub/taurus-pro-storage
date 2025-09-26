@@ -179,6 +179,11 @@ type Repository[T Entity] interface {
 	// 参数: ctx - 上下文, sql - SQL语句, args - SQL参数
 	// 示例: results, err := repo.QueryToMap(ctx, "SELECT * FROM users WHERE status = ?", "active")
 	QueryToMap(ctx context.Context, sql string, args ...interface{}) ([]map[string]interface{}, error)
+
+	// UpdateByCondition: 根据条件更新记录
+	// 参数: ctx - 上下文, update - 要更新的字段和值(可以是结构体或map), condition - 查询条件(传nil则更新所有记录, 可以是结构体或map或字符串), args - 查询条件参数
+	// 示例: err := repo.UpdateByCondition(ctx, map[string]interface{}{"name": "张三"}, "id = ?", 1)
+	UpdateByCondition(ctx context.Context, update interface{}, condition interface{}, args ...interface{}) error
 }
 
 // BaseRepository 基础Repository实现，可以被具体Repository嵌入
@@ -612,4 +617,30 @@ func (r *BaseRepository[T]) QueryToMap(ctx context.Context, sql string, args ...
 //	})
 func (r *BaseRepository[T]) WithTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return r.db.WithContext(ctx).Transaction(fn)
+}
+
+// UpdateByCondition 根据条件更新记录
+// 参数说明:
+//   - ctx: 上下文，用于超时控制和取消
+//   - update: 要更新的字段和值，不能为空, 可以是一个结构体或map
+//   - condition: 查询条件，传nil 则更新所有记录
+//   - args: 查询条件参数，按顺序对应condition中的占位符
+//
+// 返回值: error - 更新成功返回nil，失败返回错误信息
+// 使用示例:
+//
+//	err := repo.UpdateByCondition(ctx, map[string]interface{}{"name": "张三"}, "id = ?", 1)
+func (r *BaseRepository[T]) UpdateByCondition(ctx context.Context, update interface{}, condition interface{}, args ...interface{}) error {
+	if update == nil {
+		return errors.New("update fields cannot be nil")
+	}
+
+	var entity T
+	query := r.db.WithContext(ctx).Model(&entity)
+
+	if condition != nil {
+		query = query.Where(condition, args...)
+	}
+
+	return query.Updates(update).Error
 }
