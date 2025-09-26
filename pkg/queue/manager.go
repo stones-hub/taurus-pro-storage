@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -39,15 +40,15 @@ type Manager struct {
 // NewManager 创建一个新的队列管理器
 func NewManager(processor Processor, config *Config) (*Manager, error) {
 	if processor == nil {
-		return nil, fmt.Errorf("processor cannot be nil")
+		return nil, errors.New("manager.NewManager(): processor must been set")
 	}
 	if config == nil {
-		return nil, fmt.Errorf("config cannot be nil")
+		return nil, errors.New("manager.NewManager(): config must been set")
 	}
 
 	// 验证配置的合理性
 	if err := validateConfig(config); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+		return nil, fmt.Errorf("manager.NewManager(): invalid config: %w", err)
 	}
 
 	var queueEngine engine.Engine
@@ -58,7 +59,7 @@ func NewManager(processor Processor, config *Config) (*Manager, error) {
 	case engine.TypeChannel:
 		queueEngine = engine.NewChannelEngine()
 	default:
-		return nil, fmt.Errorf("unsupported queue engine type: %s", config.EngineType)
+		return nil, fmt.Errorf("manager.NewManager(): unsupported queue engine type: %s", config.EngineType)
 	}
 
 	return &Manager{
@@ -111,12 +112,12 @@ func validateConfig(config *Config) error {
 // Start 启动队列管理器
 func (m *Manager) Start() error {
 	if !atomic.CompareAndSwapInt32((*int32)(&m.status), int32(StatusStopped), int32(StatusRunning)) {
-		return fmt.Errorf("manager is already running or stopping")
+		return fmt.Errorf("manager.Start(): manager is already running or stopping")
 	}
 
 	// 恢复处理中队列的未完成数据
 	if err := m.recoverProcessingQueue(); err != nil {
-		log.Printf("Warning: Failed to recover processing queue: %v", err)
+		log.Printf("manager.Start(): [warning] Failed to recover processing queue: %v", err)
 	}
 
 	// 启动读取协程
@@ -149,17 +150,17 @@ func (m *Manager) Start() error {
 		go m.processRetryQueue()
 	}
 
-	log.Printf("Queue manager started with %d readers and %d workers", m.config.ReaderCount, m.config.WorkerCount)
+	log.Printf("manager.Start(): [Info] Queue manager(source: %s) started with %d readers and %d workers", m.config.Source, m.config.ReaderCount, m.config.WorkerCount)
 	return nil
 }
 
 // Stop 停止队列管理器
 func (m *Manager) Stop(ctx context.Context) error {
 	if !atomic.CompareAndSwapInt32((*int32)(&m.status), int32(StatusRunning), int32(StatusStopping)) {
-		return fmt.Errorf("manager is not running")
+		return fmt.Errorf("Manager.Stop(): manager is not running")
 	}
 
-	log.Printf("Stopping queue manager...")
+	log.Printf("Manager.Stop(): [Info] Stopping queue manager(name: %s)...", m.config.Source)
 
 	// 关闭停止通道
 	close(m.stopChan)
@@ -195,13 +196,13 @@ func (m *Manager) Stop(ctx context.Context) error {
 	case <-done:
 		// 关闭队列引擎
 		if err := m.engine.Close(); err != nil {
-			log.Printf("Error closing queue engine: %v", err)
+			log.Printf("Manager.Stop(): [Error] Closing queue (name: %s) engine error : %v", m.config.Source, err)
 		}
 		atomic.StoreInt32((*int32)(&m.status), int32(StatusStopped))
-		log.Printf("Queue manager stopped successfully")
+		log.Printf("Manager.Stop(): [Info] Stopped queue (name: %s) successfully", m.config.Source)
 		return nil
 	case <-ctx.Done():
-		log.Printf("Queue manager stop timeout: %v", ctx.Err())
+		log.Printf("Manager.Stop(): [Error] Stopping queue (name: %s) timeout: %v", m.config.Source, ctx.Err())
 		return ctx.Err()
 	}
 }
@@ -209,11 +210,11 @@ func (m *Manager) Stop(ctx context.Context) error {
 // AddData 添加数据到队列
 func (m *Manager) AddData(ctx context.Context, data []byte) error {
 	if atomic.LoadInt32((*int32)(&m.status)) != int32(StatusRunning) {
-		return fmt.Errorf("manager is not running")
+		return fmt.Errorf("manager.AddData(): queue manager(source: %s) is not running", m.config.Source)
 	}
 
 	if len(data) == 0 {
-		return fmt.Errorf("data cannot be empty")
+		return fmt.Errorf("manager.AddData(): data must been set")
 	}
 
 	item := &DataItem{
@@ -222,11 +223,11 @@ func (m *Manager) AddData(ctx context.Context, data []byte) error {
 
 	itemData, err := item.ToJSON()
 	if err != nil {
-		return fmt.Errorf("marshal data item: %w", err)
+		return fmt.Errorf("manager.AddData(): marshal data item: %w", err)
 	}
 
 	if err := m.engine.Push(ctx, m.config.Source, itemData); err != nil {
-		return fmt.Errorf("push to source queue: %w", err)
+		return fmt.Errorf("manager.AddData(): push to source queue(source: %s) error: %v", m.config.Source, err)
 	}
 
 	return nil
@@ -258,16 +259,16 @@ func (m *Manager) processFailedQueue() {
 	ticker := time.NewTicker(m.config.FailedInterval)
 	defer ticker.Stop()
 
-	log.Printf("Failed queue processor started")
+	log.Printf("Manager.processFailedQueue(): [Info] failed_queue(name: %s) processor started", m.config.Failed)
 
 	for {
 		select {
 		case <-m.stopChan:
-			log.Printf("Failed queue processor stopped")
+			log.Printf("Manager.processFailedQueue(): [Info] failed_queue(name: %s) processor stopped", m.config.Failed)
 			return
 		case <-ticker.C:
 			if err := m.processFailedQueueBatch(); err != nil {
-				log.Printf("Error processing failed queue batch: %v", err)
+				log.Printf("Manager.processFailedQueue(): [Error] failed_queue(name: %s) batch process error: %v", m.config.Failed, err)
 			}
 		}
 	}
@@ -280,20 +281,20 @@ func (m *Manager) processFailedQueueBatch() error {
 
 	items, err := m.engine.BatchPop(ctx, m.config.Failed, m.config.FailedBatch, time.Second*5)
 	if err != nil {
-		return fmt.Errorf("batch pop from failed queue: %w", err)
+		return fmt.Errorf("manager.processFailedQueueBatch(): batch pop from failed_queue(name: %s) error: %v", m.config.Failed, err)
 	}
 
 	if len(items) == 0 {
 		return nil
 	}
 
-	log.Printf("Processing %d items from failed queue", len(items))
+	log.Printf("Manager.processFailedQueueBatch(): [Info] processing %d items from failed_queue(name: %s)", len(items), m.config.Failed)
 
 	for _, data := range items {
 		// 解析失败队列数据
 		item, err := FromJSON(data)
 		if err != nil {
-			log.Printf("[数据丢失] Error parsing failed queue data: %v, data: %s", err, string(data))
+			log.Printf("Manager.processFailedQueueBatch(): [Error] parsing failed_queue data(name: %s) error: %v, data: %s", m.config.Failed, err, string(data))
 			continue
 		}
 
@@ -304,11 +305,11 @@ func (m *Manager) processFailedQueueBatch() error {
 
 		if err != nil {
 			// 处理失败，记录日志落盘
-			log.Printf("[最终失败] Failed to process item %s after retries, discarding permanently. Error: %v, Data: %s",
+			log.Printf("Manager.processFailedQueueBatch(): [Error] Failed to process item %s after retries, discarding permanently. Error: %v, Data: %s",
 				item.ID, err, string(item.Data))
 		} else {
 			// 处理成功
-			log.Printf("[最终成功] Successfully processed item %s from failed queue", item.ID)
+			log.Printf("Manager.processFailedQueueBatch(): [Info] Successfully processed item %s from failed_queue(name: %s)", item.ID, m.config.Failed)
 		}
 	}
 
@@ -323,16 +324,16 @@ func (m *Manager) processRetryQueue() {
 	ticker := time.NewTicker(m.config.RetryInterval)
 	defer ticker.Stop()
 
-	log.Printf("Retry queue processor started")
+	log.Printf("Manager.processRetryQueue(): [Info] retry_queue(name: %s) processor started", m.config.Retry)
 
 	for {
 		select {
 		case <-m.stopChan:
-			log.Printf("Retry queue processor stopped")
+			log.Printf("Manager.processRetryQueue(): [Info] retry_queue(name: %s) processor stopped", m.config.Retry)
 			return
 		case <-ticker.C:
 			if err := m.processRetryQueueBatch(); err != nil {
-				log.Printf("读取重试队列失败: %v\n", err)
+				log.Printf("Manager.processRetryQueue(): [Error] retry_queue(name: %s) batch process error: %v", m.config.Retry, err)
 			}
 		}
 	}
@@ -353,26 +354,26 @@ func (m *Manager) processRetryQueueBatch() error {
 		return nil
 	}
 
-	log.Printf("Processing %d items from retry queue", len(items))
+	log.Printf("Manager.processRetryQueueBatch(): [Info] processing %d items from retry_queue(name: %s)", len(items), m.config.Retry)
 
 	for _, data := range items {
 		// 解析数据
 		item, err := FromJSON(data)
 		if err != nil {
-			log.Printf("parse retry queue data error: %v", err)
+			log.Printf("Manager.processRetryQueueBatch(): [Error] parsing retry_queue data(name: %s) error: %v", m.config.Retry, err)
 			// 尝试丢到失败队列
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 			pushErr := m.engine.Push(ctx, m.config.Failed, data)
 			cancel()
 			if pushErr != nil {
-				log.Printf("[数据丢失] Error pushing failed item to failed queue: %v, data: %s, 数据丢弃。", pushErr, string(data))
+				log.Printf("Manager.processRetryQueueBatch(): [Error] pushing failed item to failed_queue(name: %s) error: %v, data: %s, 数据丢弃。", m.config.Failed, pushErr, string(data))
 			}
 			continue
 		}
 
 		// 直接处理到期的数据
 		if err := m.processRetryItem(item, data); err != nil {
-			log.Printf("Error processing retry item: %v", err)
+			log.Printf("Manager.processRetryQueueBatch(): [Error] processing retry item(name: %s) error: %v", m.config.Retry, err)
 		}
 	}
 
@@ -390,22 +391,22 @@ func (m *Manager) processRetryItem(item *DataItem, originalData []byte) error {
 
 	if err != nil {
 		if err == context.DeadlineExceeded || err == context.Canceled {
-			log.Printf("Retry item %s processing timeout, moving to failed queue", item.ID)
+			log.Printf("Manager.processRetryItem(): [Error] retry item %s processing timeout, moving to failed_queue(name: %s)", item.ID, m.config.Failed)
 			return moveToFailedQueue(m.engine, m.config, originalData)
 		}
 
 		if IsRetryableError(err) && item.ShouldRetry(m.config) {
-			log.Printf("Retry item %s processing failed with retryable error, scheduling retry", item.ID)
+			log.Printf("Manager.processRetryItem(): [Error] retry item %s processing failed with retryable error, scheduling retry", item.ID)
 			return handleRetry(m.engine, m.config, item, originalData)
 		}
 
 		// 重试次数已用完或不可重试的错误，移到失败队列
-		log.Printf("Retry item %s processing failed with non-retryable error, moving to failed queue", item.ID)
+		log.Printf("Manager.processRetryItem(): [Error] retry item %s processing failed with non-retryable error, moving to failed_queue(name: %s)", item.ID, m.config.Failed)
 		return moveToFailedQueue(m.engine, m.config, originalData)
 	}
 
 	// 处理成功，记录日志
-	log.Printf("Retry queue: Successfully processed item %s after %d retries", item.ID, item.RetryCount)
+	log.Printf("Manager.processRetryItem(): [Info] Successfully processed item %s after %d retries", item.ID, item.RetryCount)
 	return nil
 }
 

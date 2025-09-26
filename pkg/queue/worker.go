@@ -22,13 +22,13 @@ type Worker struct {
 // NewWorker 创建一个新的 Worker
 func NewWorker(id int, engine engine.Engine, processor Processor, config *Config, wg *sync.WaitGroup) *Worker {
 	if engine == nil {
-		panic("engine cannot be nil")
+		panic("worker.NewWorker(): engine cannot be nil")
 	}
 	if processor == nil {
-		panic("processor cannot be nil")
+		panic("worker.NewWorker(): processor cannot be nil")
 	}
 	if config == nil {
-		panic("config cannot be nil")
+		panic("worker.NewWorker(): config cannot be nil")
 	}
 
 	return &Worker{
@@ -60,7 +60,7 @@ func (w *Worker) run() {
 	for {
 		select {
 		case <-w.stopChan:
-			log.Printf("Queue Worker %d: Stopped", w.id)
+			log.Printf("Worker.run(): [Info] Worker[%d]队列, 停止处理。", w.id)
 			return
 		default:
 			// 从队列中取数据处理, 如果数据没有，会等待w.config.WorkerTimeout
@@ -95,7 +95,7 @@ func (w *Worker) processOne() error {
 	// 解析数据以获取ID
 	item, err := FromJSON(data)
 	if err != nil {
-		log.Printf("Worker %d: Error parsing data: %v", w.id, err)
+		log.Printf("Worker.processOne(): [Error] Worker[%d]队列, 解析数据错误(%v), 请及时检查队列是否正常。", w.id, err)
 		// 数据已经从处理中队列移除，直接移到失败队列
 		return moveToFailedQueue(w.engine, w.config, data)
 	}
@@ -110,22 +110,22 @@ func (w *Worker) processOne() error {
 	if err != nil {
 		if err == context.DeadlineExceeded || err == context.Canceled {
 			// 如果错误是上下文超时或取消，则将数据移动到失败队列
-			log.Printf("Worker %d: Processing timeout for item %s, moving to failed queue", w.id, item.ID)
+			log.Printf("Worker.processOne(): [Error] Worker[%d]队列, 处理超时, 移动(item: %s)到失败队列。", w.id, item.ID)
 			return moveToFailedQueue(w.engine, w.config, data)
 		}
 
 		// 如果错误是可重试的错误，则进行重试
 		if IsRetryableError(err) && item.ShouldRetry(w.config) {
-			log.Printf("Worker %d: Processing failed with retryable error for item %s, scheduling retry", w.id, item.ID)
+			log.Printf("Worker.processOne(): [Error] Worker[%d]队列, 处理失败, 重试(item: %s)。", w.id, item.ID)
 			return handleRetry(w.engine, w.config, item, data)
 		}
 
 		// 重试次数已用完或不可重试的错误，移到失败队列
-		log.Printf("Worker %d: Processing failed with non-retryable error for item %s, moving to failed queue", w.id, item.ID)
+		log.Printf("Worker.processOne(): [Error] Worker[%d]队列, 处理失败, 移动(item: %s)到失败队列。", w.id, item.ID)
 		return moveToFailedQueue(w.engine, w.config, data)
 	}
 
 	// 处理成功，记录日志
-	log.Printf("Worker %d: Successfully processed item %s", w.id, item.ID)
+	log.Printf("Worker.processOne(): [Info] Worker[%d]队列, 成功处理数据(item: %s)。", w.id, item.ID)
 	return nil
 }

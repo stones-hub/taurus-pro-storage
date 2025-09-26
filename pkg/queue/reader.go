@@ -21,10 +21,10 @@ type Reader struct {
 // NewReader 创建一个新的 Reader
 func NewReader(id int, engine engine.Engine, config *Config, wg *sync.WaitGroup) *Reader {
 	if engine == nil {
-		panic("engine cannot be nil")
+		panic("reader.NewReader(): engine cannot be nil")
 	}
 	if config == nil {
-		panic("config cannot be nil")
+		panic("reader.NewReader(): config cannot be nil")
 	}
 
 	return &Reader{
@@ -55,7 +55,7 @@ func (r *Reader) run() {
 	for {
 		select {
 		case <-r.stopChan:
-			log.Printf("Queue Reader %d: Stopped", r.id)
+			log.Printf("Reader.run(): [Info] Reader[%d]队列, 停止读取。", r.id)
 			return
 		default:
 			// 从源队列读取数据并放入处理中队列, 如果数据没有，会等待r.config.ReaderInterval
@@ -90,7 +90,7 @@ func (r *Reader) readOne() error {
 	// 解析数据以获取ID
 	item, err := FromJSON(data)
 	if err != nil {
-		log.Printf("Reader %d: Error parsing data: %v", r.id, err)
+		log.Printf("Reader.readOne(): [Error] Reader[%d]队列, 解析数据错误(%v), 请及时检查队列是否正常。", r.id, err)
 		// 格式错误的数据移到失败队列
 		return moveToFailedQueue(r.engine, r.config, data)
 	}
@@ -98,10 +98,10 @@ func (r *Reader) readOne() error {
 	// 立即放入处理中队列，防止数据丢失
 	err = r.engine.Push(ctx, r.config.Processing, data)
 	if err != nil {
-		log.Printf("Reader %d: Error moving to processing queue: %v", r.id, err)
+		log.Printf("Reader.readOne(): [Error] Reader[%d]队列, 移动到处理中队列错误(%v), 请及时检查队列是否正常。", r.id, err)
 		return err
 	}
 
-	log.Printf("Reader %d: Successfully moved item %s to processing queue", r.id, item.ID)
+	log.Printf("Reader.readOne(): [Info] Reader[%d]队列, 成功移动数据(%s)到处理中队列。", r.id, item.ID)
 	return nil
 }
