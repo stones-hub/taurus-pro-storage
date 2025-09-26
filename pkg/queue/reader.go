@@ -58,7 +58,7 @@ func (r *Reader) run() {
 			log.Printf("Queue Reader %d: Stopped", r.id)
 			return
 		default:
-			// 从源队列读取数据并放入处理中队列
+			// 从源队列读取数据并放入处理中队列, 如果数据没有，会等待r.config.ReaderInterval
 			if err := r.readOne(); err != nil {
 				// 判断是不是context超时错误
 				if err == context.DeadlineExceeded || err == context.Canceled {

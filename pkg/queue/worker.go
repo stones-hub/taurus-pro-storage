@@ -63,7 +63,7 @@ func (w *Worker) run() {
 			log.Printf("Queue Worker %d: Stopped", w.id)
 			return
 		default:
-			// 从队列中取数据处理, 如果数据没有，会等待w.config.ReaderInterval
+			// 从队列中取数据处理, 如果数据没有，会等待w.config.WorkerTimeout
 			if err := w.processOne(); err != nil {
 				// 判断是不是context超时错误
 				if err == context.DeadlineExceeded || err == context.Canceled {
@@ -79,11 +79,11 @@ func (w *Worker) run() {
 // processOne 处理一条数据 (从处理中队列读取数据->处理数据->放入要么重试队列要么失败队列)
 func (w *Worker) processOne() error {
 	// 创建上下文，用于数据获取
-	ctx, cancel := context.WithTimeout(context.Background(), w.config.ReaderInterval)
+	ctx, cancel := context.WithTimeout(context.Background(), w.config.WorkerTimeout)
 	defer cancel()
 
 	// 从处理中队列获取一条数据, 获取后，数据会从processing队列移除
-	data, err := w.engine.Pop(ctx, w.config.Processing, w.config.ReaderInterval)
+	data, err := w.engine.Pop(ctx, w.config.Processing, w.config.WorkerTimeout)
 	if err != nil {
 		if err == context.DeadlineExceeded || err == context.Canceled {
 			// 上下文超时或取消, 返回错误
