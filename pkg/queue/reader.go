@@ -62,9 +62,9 @@ func (r *Reader) run() {
 			if err := r.readOne(); err != nil {
 				// 判断是不是context超时错误
 				if err == context.DeadlineExceeded || err == context.Canceled {
-					log.Fatalf("Reader.run() warnning: Reader[%d]队列, 管道数据为空(%v), 读取超时, 请忽略。", r.id, err)
+					log.Printf("Reader.run() warnning: Reader[%d]队列, 管道数据为空(%v), 读取超时, 请忽略。", r.id, err)
 				} else {
-					log.Fatalf("Reader.run() error: Reader[%d]队列, 读取数据错误(%v), 请及时检查队列是否正常。", r.id, err)
+					log.Printf("Reader.run() error: Reader[%d]队列, 读取数据错误(%v), 请及时检查队列是否正常。", r.id, err)
 				}
 			}
 		}
