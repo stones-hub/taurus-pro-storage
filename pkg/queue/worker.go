@@ -2,7 +2,6 @@ package queue
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 
@@ -68,7 +67,7 @@ func (w *Worker) run() {
 			if err := w.processOne(); err != nil {
 				// 判断是不是context超时错误
 				if err == context.DeadlineExceeded || err == context.Canceled {
-					log.Printf("Worker.run() warnning: Worker[%d]队列, 管道数据为空(%v), 处理超时, 请忽略。", w.id, err)
+					log.Fatalf("Worker.run() warnning: Worker[%d]队列, 管道数据为空(%v), 处理超时, 请忽略。", w.id, err)
 				} else {
 					log.Printf("Worker.run() error: Worker[%d]队列, 处理数据错误(%v), 请及时检查队列是否正常。", w.id, err)
 				}
@@ -88,7 +87,7 @@ func (w *Worker) processOne() error {
 	if err != nil {
 		if err == context.DeadlineExceeded || err == context.Canceled {
 			// 上下文超时或取消, 返回错误
-			return fmt.Errorf("pop data timeout: %w", err)
+			return err
 		}
 		return nil // 无数据，正常返回
 	}
