@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"time"
 
 	"github.com/stones-hub/taurus-pro-common/pkg/recovery"
 	"github.com/stones-hub/taurus-pro-storage/pkg/queue/engine"
@@ -62,7 +61,12 @@ func (r *Reader) run() {
 		default:
 			// 从源队列读取数据并放入处理中队列
 			if err := r.readOne(); err != nil {
-				log.Printf("Queue Reader %d: Read error: %v", r.id, err)
+				// 判断是不是context超时错误
+				if err == context.DeadlineExceeded || err == context.Canceled {
+					log.Printf("Reader.run() warnning: Reader[%d]队列, 管道数据为空(%v), 读取超时, 请忽略。", r.id, err)
+				} else {
+					log.Printf("Reader.run() error: Reader[%d]队列, 读取数据错误(%v), 请及时检查队列是否正常。", r.id, err)
+				}
 			}
 		}
 	}
@@ -71,7 +75,7 @@ func (r *Reader) run() {
 // readOne 从source队列中读取一条数据，并放入processing队列
 func (r *Reader) readOne() error {
 	// 创建上下文，用于数据获取
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), r.config.ReaderInterval)
 	defer cancel()
 
 	// 从源队列获取数据
