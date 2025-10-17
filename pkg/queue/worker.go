@@ -2,42 +2,59 @@ package queue
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
+	"time"
 
-	"github.com/stones-hub/taurus-pro-common/pkg/recovery"
+	"github.com/stones-hub/taurus-pro-storage/pkg/queue/common"
 	"github.com/stones-hub/taurus-pro-storage/pkg/queue/engine"
 )
 
 // Worker 表示一个工作协程
 type Worker struct {
 	id        int
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        *sync.WaitGroup
 	engine    engine.Engine
 	processor Processor
 	config    *Config
-	stopChan  chan struct{}
-	wg        *sync.WaitGroup
+	closed    bool
+	mu        sync.RWMutex
+	stop      chan struct{}
 }
 
 // NewWorker 创建一个新的 Worker
-func NewWorker(id int, engine engine.Engine, processor Processor, config *Config, wg *sync.WaitGroup) *Worker {
+func NewWorker(id int, ctx context.Context, engine engine.Engine, processor Processor, config *Config) *Worker {
 	if engine == nil {
-		panic("worker.NewWorker(): engine cannot be nil")
+		panicError := common.NewPanicError(errors.New("engine cannot be nil"), string(debug.Stack()))
+		panic(panicError.FormatAsSimple())
 	}
 	if processor == nil {
-		panic("worker.NewWorker(): processor cannot be nil")
+		panicError := common.NewPanicError(errors.New("processor cannot be nil"), string(debug.Stack()))
+		panic(panicError.FormatAsSimple())
 	}
 	if config == nil {
-		panic("worker.NewWorker(): config cannot be nil")
+		panicError := common.NewPanicError(errors.New("config cannot be nil"), string(debug.Stack()))
+		panic(panicError.FormatAsSimple())
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
 
 	return &Worker{
 		id:        id,
+		ctx:       ctx,
+		cancel:    cancel,
+		wg:        &sync.WaitGroup{},
 		engine:    engine,
 		processor: processor,
 		config:    config,
-		stopChan:  make(chan struct{}),
-		wg:        wg,
+		closed:    false,
+		stop:      make(chan struct{}),
+		mu:        sync.RWMutex{},
 	}
 }
 
@@ -49,83 +66,92 @@ func (w *Worker) Start() {
 
 // Stop 停止 Worker
 func (w *Worker) Stop() {
-	close(w.stopChan)
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.closed = true
+	w.mu.Unlock()
+	close(w.stop)
+
+	done := make(chan struct{})
+	go func() {
+		w.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		log.Printf("Worker.Stop(): [Info] Worker[%d]队列, 成功停止处理。", w.id)
+	case <-time.After(w.config.Timeout):
+		log.Printf("Worker.Stop(): [Error] Worker[%d]队列, 停止处理超时。", w.id)
+	}
 }
 
 // run Worker 的主循环
 func (w *Worker) run() {
-	defer w.wg.Done()
-	defer recovery.GlobalPanicRecovery.Recover("异步队列处理协程[taurus-pro-storage/pkg/queue/worker.run()]")
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+		w.wg.Done()
+	}()
 
 	for {
 		select {
-		case <-w.stopChan:
-			log.Printf("Worker.run(): [Info] Worker[%d]队列, 停止处理。", w.id)
+		case <-w.stop:
+			log.Printf("Worker.run(): [Info] Worker[%d]队列, 收到停止信号, 停止处理。", w.id)
+			return
+		case <-w.ctx.Done():
+			log.Printf("Worker.run(): [Info] Worker[%d]队列, 上下文context取消, 停止处理。", w.id)
 			return
 		default:
-			// 从队列中取数据处理, 如果数据没有，会等待w.config.WorkerTimeout
-			if err := w.processOne(); err != nil {
-				// 判断是不是context超时错误
-				if err == context.DeadlineExceeded || err == context.Canceled {
-					log.Printf("Worker.run() warnning: Worker[%d]队列, 管道数据为空(%v), 处理超时, 请忽略。", w.id, err)
-				} else {
-					log.Printf("Worker.run() error: Worker[%d]队列, 处理数据错误(%v), 请及时检查队列是否正常。", w.id, err)
+			if err := w.work(); err != nil {
+				// 检查是否是context取消导致的错误
+				if errors.Is(err, context.Canceled) {
+					// context被取消，直接退出循环
+					log.Printf("Worker.run(): [Info] Worker[%d]队列, context被取消, 停止处理。", w.id)
+					return
 				}
+				// 其他错误记录日志，但继续运行
+				log.Printf("Worker.run(): [Error] Worker[%d]队列, 处理数据错误(%v), 继续尝试处理。", w.id, err)
 			}
 		}
 	}
 }
 
-// processOne 处理一条数据 (从处理中队列读取数据->处理数据->放入要么重试队列要么失败队列)
-func (w *Worker) processOne() error {
-	// 创建上下文，用于数据获取
-	ctx, cancel := context.WithTimeout(context.Background(), w.config.WorkerTimeout)
-	defer cancel()
-
-	// 从处理中队列获取一条数据, 获取后，数据会从processing队列移除
-	data, err := w.engine.Pop(ctx, w.config.Processing, w.config.WorkerTimeout)
+// work 处理一条数据 (从处理中队列读取数据->处理数据->放入要么重试队列要么失败队列)
+func (w *Worker) work() error {
+	data, err := w.engine.PopBlocking(w.ctx, w.config.Processing)
 	if err != nil {
-		if err == context.DeadlineExceeded || err == context.Canceled {
-			// 上下文超时或取消, 返回错误
-			return err
-		}
-		return nil // 无数据，正常返回
+		return err
 	}
 
-	// 解析数据以获取ID
 	item, err := FromJSON(data)
 	if err != nil {
-		log.Printf("Worker.processOne(): [Error] Worker[%d]队列, 解析数据错误(%v), 请及时检查队列是否正常。", w.id, err)
-		// 数据已经从处理中队列移除，直接移到失败队列
-		return moveToFailedQueue(w.engine, w.config, data)
+		log.Printf("Worker.work(): [Error] Worker[%d]队列, 解析数据错误(%v), 将数据(%s)移动到失败队列。", w.id, err, string(data))
+		return PushToFailedQueueNonBlocking(w.ctx, w.engine, w.config, data)
 	}
-
-	// 创建带超时的上下文用于处理数据
-	pCtx, pCancel := context.WithTimeout(context.Background(), w.config.WorkerTimeout)
-	defer pCancel()
 
 	// 处理数据
-	err = w.processor.Process(pCtx, item.Data)
-
+	err = w.processor.Process(w.ctx, item.Data)
 	if err != nil {
-		if err == context.DeadlineExceeded || err == context.Canceled {
-			// 如果错误是上下文超时或取消，则将数据移动到失败队列
-			log.Printf("Worker.processOne(): [Error] Worker[%d]队列, 处理超时, 移动(item: %s)到失败队列。", w.id, item.ID)
-			return moveToFailedQueue(w.engine, w.config, data)
+		// 如果是重试错误，则放入重试队列
+		if common.IsRetryableError(err) && item.ShouldRetry(w.config) {
+			log.Printf("Worker.work(): [Error] Worker[%d]队列, 处理失败, 重试(item: %s), 将数据(%s)移动到重试队列。", w.id, item.ID, string(data))
+			return HandleRetry(w.ctx, w.engine, w.config, item, data)
 		}
 
-		// 如果错误是可重试的错误，则进行重试
-		if IsRetryableError(err) && item.ShouldRetry(w.config) {
-			log.Printf("Worker.processOne(): [Error] Worker[%d]队列, 处理失败, 重试(item: %s)。", w.id, item.ID)
-			return handleRetry(w.engine, w.config, item, data)
+		// 如果是明确的失败队列错误，则放入失败队列 (考虑到业务逻辑有可能导致超时，我们这里不处理超时错误)
+		if common.IsErrorableError(err) {
+			log.Printf("Worker.work(): [Error] Worker[%d]队列, 处理超时, 移动(item: %s)到失败队列。", w.id, item.ID)
+			return PushToFailedQueueNonBlocking(w.ctx, w.engine, w.config, data)
 		}
 
-		// 重试次数已用完或不可重试的错误，移到失败队列
-		log.Printf("Worker.processOne(): [Error] Worker[%d]队列, 处理失败, 移动(item: %s)到失败队列。", w.id, item.ID)
-		return moveToFailedQueue(w.engine, w.config, data)
+		// 如果是其他错误，则当前数据丢失，无需处理
+		log.Printf("Worker.work(): [Error] Worker[%d]队列, 处理失败, 数据(%s)丢失。", w.id, string(data))
 	}
 
-	// 处理成功，记录日志
-	log.Printf("Worker.processOne(): [Info] Worker[%d]队列, 成功处理数据(item: %s)。", w.id, item.ID)
 	return nil
 }

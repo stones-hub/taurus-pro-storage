@@ -5,8 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"time"
+
+	"github.com/stones-hub/taurus-pro-storage/pkg/queue/common"
 )
 
 // DataItem 表示队列中的数据项
@@ -37,10 +38,10 @@ func (item *DataItem) Validate() error {
 		item.ID = GenerateID()
 	}
 	if len(item.Data) == 0 {
-		return fmt.Errorf("data cannot be empty")
+		return common.ErrItemEmpty
 	}
 	if item.RetryCount < 0 {
-		return fmt.Errorf("retry count cannot be negative")
+		return common.ErrItemRetryCountNegative
 	}
 	return nil
 }
@@ -48,7 +49,7 @@ func (item *DataItem) Validate() error {
 // ToJSON 将 DataItem 转换为 JSON
 func (item *DataItem) ToJSON() ([]byte, error) {
 	if err := item.Validate(); err != nil {
-		return nil, fmt.Errorf("validate data item: %w", err)
+		return nil, common.ErrItemValidateFailed
 	}
 	return json.Marshal(item)
 }
@@ -81,16 +82,16 @@ func (item *DataItem) CalculateNextRetryTime(cfg *Config) time.Time {
 // FromJSON 从 JSON 解析 DataItem
 func FromJSON(data []byte) (*DataItem, error) {
 	if len(data) == 0 {
-		return nil, fmt.Errorf("empty data")
+		return nil, common.ErrItemEmpty
 	}
 
 	var item DataItem
 	if err := json.Unmarshal(data, &item); err != nil {
-		return nil, fmt.Errorf("unmarshal data item: %w", err)
+		return nil, common.ErrItemJsonUnmarshalFailed
 	}
 
 	if err := item.Validate(); err != nil {
-		return nil, fmt.Errorf("validate data item: %w", err)
+		return nil, common.ErrItemValidateFailed
 	}
 
 	return &item, nil

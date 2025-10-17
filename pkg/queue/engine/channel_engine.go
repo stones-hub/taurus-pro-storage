@@ -2,9 +2,12 @@ package engine
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/stones-hub/taurus-pro-storage/pkg/queue/common"
 )
 
 // ChannelEngine Channel队列引擎实现
@@ -35,45 +38,47 @@ type ChannelEngine struct {
 }
 
 // NewChannelEngine 创建Channel队列引擎
-func NewChannelEngine() Engine {
-	return &ChannelEngine{
+func NewChannelEngine(queueSize int, source, failed, processing string) Engine {
+	engine := &ChannelEngine{
 		queues:       make(map[string]chan []byte),
 		delayedQueue: make(map[int64][][]byte),
 	}
+
+	// 预创建所有需要的队列
+	if queueSize <= 0 {
+		queueSize = 1000 // 默认大小
+	}
+
+	// 创建所有业务队列
+	engine.queues[source] = make(chan []byte, queueSize)
+	engine.queues[processing] = make(chan []byte, queueSize)
+	engine.queues[failed] = make(chan []byte, queueSize)
+
+	return engine
 }
 
-func (e *ChannelEngine) getOrCreateQueue(queue string) chan []byte {
+// getQueue 获取已存在的队列，如果队列不存在则返回nil
+// 由于队列在初始化时已经预创建，这里只需要获取即可
+func (e *ChannelEngine) getQueue(name string) chan []byte {
 	e.queuesMu.RLock()
-	ch, exists := e.queues[queue]
-	e.queuesMu.RUnlock()
+	defer e.queuesMu.RUnlock()
 
-	if exists {
-		return ch
-	}
-
-	e.queuesMu.Lock()
-	defer e.queuesMu.Unlock()
-
-	// 双重检查, 防止在读的期间, 队列被创建
-	if ch, exists = e.queues[queue]; exists {
-		return ch
-	}
-
-	// 创建新队列
-	ch = make(chan []byte, 1000) // 使用缓冲通道
-	e.queues[queue] = ch
-	return ch
+	return e.queues[name]
 }
 
-// Push 将数据推入队列(source 和 failed, processing)
-func (e *ChannelEngine) Push(ctx context.Context, queue string, data []byte) error {
+// PushBlocking 阻塞式推送数据到队列
+func (e *ChannelEngine) PushBlocking(ctx context.Context, queue string, data []byte) error {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("ChannelEngine.Push: Recovered from panic: %v", r)
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
 		}
 	}()
 
-	ch := e.getOrCreateQueue(queue)
+	ch := e.getQueue(queue)
+	if ch == nil {
+		return fmt.Errorf("队列 %s 不存在", queue)
+	}
 
 	select {
 	case ch <- data:
@@ -83,45 +88,128 @@ func (e *ChannelEngine) Push(ctx context.Context, queue string, data []byte) err
 	}
 }
 
-// Pop 从队列中弹出数据(source 和 failed, processing)
-func (e *ChannelEngine) Pop(ctx context.Context, queue string, timeout time.Duration) ([]byte, error) {
+// PushNonBlocking 非阻塞推送数据到队列
+func (e *ChannelEngine) PushNonBlocking(ctx context.Context, queue string, data []byte) error {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("ChannelEngine.Pop: Recovered from panic: %v", r)
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
 		}
 	}()
 
-	ch := e.getOrCreateQueue(queue)
+	ch := e.getQueue(queue)
+	if ch == nil {
+		return common.ErrQueueNotExist
+	}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	select {
+	case ch <- data:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		// 队列满，返回特定错误
+		return common.ErrQueueFull
+	}
+}
+
+// PopBlocking 阻塞式读取，有数据立即返回，无数据时阻塞直到有数据或上下文取消
+func (e *ChannelEngine) PopBlocking(ctx context.Context, queue string) ([]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
+	ch := e.getQueue(queue)
+	if ch == nil {
+		return nil, common.ErrQueueNotExist
+	}
 
 	select {
 	case data := <-ch:
 		return data, nil
-	case <-timer.C:
-		return nil, context.DeadlineExceeded
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-// BatchPop 批量从队列中弹出数据(source 和 failed, processing)
-func (e *ChannelEngine) BatchPop(ctx context.Context, queue string, count int, timeout time.Duration) ([][]byte, error) {
-	ch := e.getOrCreateQueue(queue)
-	result := make([][]byte, 0, count)
+// PopNonBlocking 非阻塞读取，立即返回，无数据时返回特定错误
+func (e *ChannelEngine) PopNonBlocking(ctx context.Context, queue string) ([]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	ch := e.getQueue(queue)
+	if ch == nil {
+		return nil, common.ErrQueueNotExist
+	}
+
+	select {
+	case data := <-ch:
+		return data, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		// 队列为空，返回特定错误
+		return nil, common.ErrQueueEmpty
+	}
+}
+
+// BatchPopBlocking 批量阻塞式读取
+func (e *ChannelEngine) BatchPopBlocking(ctx context.Context, queue string, count int) ([][]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
+	ch := e.getQueue(queue)
+	if ch == nil {
+		return nil, common.ErrQueueNotExist
+	}
+
+	result := make([][]byte, 0, count)
 
 	for i := 0; i < count; i++ {
 		select {
 		case data := <-ch:
 			result = append(result, data)
-		case <-timer.C:
-			return result, nil
 		case <-ctx.Done():
 			return result, ctx.Err()
+		}
+	}
+
+	return result, nil
+}
+
+// BatchPopNonBlocking 批量非阻塞读取
+func (e *ChannelEngine) BatchPopNonBlocking(ctx context.Context, queue string, count int) ([][]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
+	ch := e.getQueue(queue)
+	if ch == nil {
+		return nil, common.ErrQueueNotExist
+	}
+
+	result := make([][]byte, 0, count)
+
+	for i := 0; i < count; i++ {
+		select {
+		case data := <-ch:
+			result = append(result, data)
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		default:
 			// 如果通道为空，直接返回已获取的数据
 			return result, nil
@@ -134,6 +222,14 @@ func (e *ChannelEngine) BatchPop(ctx context.Context, queue string, count int, t
 // PushDelayed 将数据推入延迟队列
 // 使用Map实现，插入时间复杂度O(1)
 func (e *ChannelEngine) PushDelayed(ctx context.Context, queue string, data []byte, delay time.Duration) error {
+
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
 	// 计算到期时间戳
 	expireTimestamp := time.Now().Add(delay).Unix()
 
@@ -152,6 +248,13 @@ func (e *ChannelEngine) PushDelayed(ctx context.Context, queue string, data []by
 // PopDelayed 从延迟队列中弹出到期的数据
 // 使用Map实现，查找到期数据时间复杂度O(1)
 func (e *ChannelEngine) PopDelayed(ctx context.Context, queue string, count int) ([][]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
 	e.delayedQueueMu.Lock()
 	defer e.delayedQueueMu.Unlock()
 
@@ -181,7 +284,6 @@ func (e *ChannelEngine) PopDelayed(ctx context.Context, queue string, count int)
 			}
 		}
 	}
-
 	return result, nil
 }
 

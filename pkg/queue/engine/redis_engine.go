@@ -3,10 +3,11 @@ package engine
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/stones-hub/taurus-pro-common/pkg/recovery"
+	"github.com/stones-hub/taurus-pro-storage/pkg/queue/common"
 	"github.com/stones-hub/taurus-pro-storage/pkg/redisx"
 )
 
@@ -22,18 +23,40 @@ func NewRedisEngine(client *redisx.RedisClient) Engine {
 	}
 }
 
-// Push 将数据推入队列(source 和 failed)
-func (e *RedisEngine) Push(ctx context.Context, queue string, data []byte) error {
-	defer recovery.GlobalPanicRecovery.Recover("数据写入异步队列错误[taurus-pro-storage/pkg/queue/engine/redis_engine.Push()]")
+// pushData 推送数据到队列的核心实现
+// 由于 Redis 的 LPUSH 永远不会阻塞，所以 PushBlocking 和 PushNonBlocking 使用相同实现
+func (e *RedisEngine) pushData(ctx context.Context, queue string, data []byte) error {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
 	return e.client.GetClient().LPush(ctx, queue, data).Err()
 }
 
-// Pop 从队列中弹出数据(source 和 failed)
-func (e *RedisEngine) Pop(ctx context.Context, queue string, timeout time.Duration) ([]byte, error) {
-	defer recovery.GlobalPanicRecovery.Recover("数据从异步队列中弹出错误[taurus-pro-storage/pkg/queue/engine/redis_engine.Pop()]")
+// PushBlocking 阻塞式推送数据到队列
+// 注意：Redis 的 LPUSH 永远不会阻塞，所以这里与 PushNonBlocking 行为相同
+func (e *RedisEngine) PushBlocking(ctx context.Context, queue string, data []byte) error {
+	return e.pushData(ctx, queue, data)
+}
 
-	// 使用BRPOP命令从队列中弹出数据, 如果队列为空，则阻塞等待timeout时间
-	result, err := e.client.GetClient().BRPop(ctx, timeout, queue).Result()
+// PushNonBlocking 非阻塞推送数据到队列
+func (e *RedisEngine) PushNonBlocking(ctx context.Context, queue string, data []byte) error {
+	return e.pushData(ctx, queue, data)
+}
+
+// PopBlocking 阻塞式读取，有数据立即返回，无数据时阻塞直到有数据或上下文取消
+func (e *RedisEngine) PopBlocking(ctx context.Context, queue string) ([]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
+	// 使用BRPOP命令，超时时间设为0表示无限等待
+	result, err := e.client.GetClient().BRPop(ctx, 0, queue).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -41,15 +64,61 @@ func (e *RedisEngine) Pop(ctx context.Context, queue string, timeout time.Durati
 	return []byte(result[1]), nil
 }
 
-// BatchPop 批量从队列中弹出数据(source 和 failed)
-func (e *RedisEngine) BatchPop(ctx context.Context, queue string, count int, timeout time.Duration) ([][]byte, error) {
-	defer recovery.GlobalPanicRecovery.Recover("数据从异步队列中批量弹出错误[taurus-pro-storage/pkg/queue/engine/redis_engine.BatchPop()]")
+// PopNonBlocking 非阻塞读取，立即返回，无数据时返回特定错误
+func (e *RedisEngine) PopNonBlocking(ctx context.Context, queue string) ([]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
+	// 使用RPOP命令，非阻塞，立即返回
+	result, err := e.client.GetClient().RPop(ctx, queue).Result()
+	if err != nil {
+		if err == redis.Nil {
+			// 队列为空，返回特定错误
+			return nil, common.ErrQueueEmpty
+		}
+		return nil, err
+	}
+	return []byte(result), nil
+}
+
+// BatchPopBlocking 批量阻塞式读取
+func (e *RedisEngine) BatchPopBlocking(ctx context.Context, queue string, count int) ([][]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
 
 	var result [][]byte
 	for i := 0; i < count; i++ {
-		data, err := e.Pop(ctx, queue, timeout)
+		data, err := e.PopBlocking(ctx, queue)
 		if err != nil {
-			if err == redis.Nil {
+			return result, err
+		}
+		result = append(result, data)
+	}
+	return result, nil
+}
+
+// BatchPopNonBlocking 批量非阻塞读取
+func (e *RedisEngine) BatchPopNonBlocking(ctx context.Context, queue string, count int) ([][]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
+	var result [][]byte
+	for i := 0; i < count; i++ {
+		data, err := e.PopNonBlocking(ctx, queue)
+		if err != nil {
+			if err == common.ErrQueueEmpty {
 				break
 			}
 			return result, err
@@ -67,6 +136,13 @@ func (e *RedisEngine) BatchPop(ctx context.Context, queue string, count int, tim
 //   - data: 要存储的消息数据
 //   - delay: 延迟时间，消息将在当前时间+delay后到期
 func (e *RedisEngine) PushDelayed(ctx context.Context, queue string, data []byte, delay time.Duration) error {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
 	// 计算到期时间戳作为分数(score)
 	// score = 当前时间 + 延迟时间，用于排序
 	score := float64(time.Now().Add(delay).Unix())
@@ -91,6 +167,13 @@ func (e *RedisEngine) PushDelayed(ctx context.Context, queue string, data []byte
 //   - queue: 队列名称，会自动添加"_delayed"后缀
 //   - count: 最多返回的消息数量，用于分页控制
 func (e *RedisEngine) PopDelayed(ctx context.Context, queue string, count int) ([][]byte, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+	}()
+
 	// 获取当前时间戳，用于判断哪些消息已到期
 	now := float64(time.Now().Unix())
 

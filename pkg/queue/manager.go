@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-	"github.com/stones-hub/taurus-pro-common/pkg/recovery"
+	"github.com/stones-hub/taurus-pro-storage/pkg/queue/common"
 	"github.com/stones-hub/taurus-pro-storage/pkg/queue/engine"
 	"github.com/stones-hub/taurus-pro-storage/pkg/redisx"
 )
@@ -31,99 +31,78 @@ type Manager struct {
 	config    *Config
 	workers   []*Worker
 	readers   []*Reader
-	wg        sync.WaitGroup
-	stopChan  chan struct{}
+	wg        *sync.WaitGroup
+	stop      chan struct{}
 	status    Status
 	mu        sync.RWMutex // 保护workers和readers切片的并发访问
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // NewManager 创建一个新的队列管理器
 func NewManager(processor Processor, config *Config) (*Manager, error) {
 	if processor == nil {
-		return nil, errors.New("manager.NewManager(): processor must been set")
+		panicError := common.NewPanicError(errors.New("processor cannot be nil"), string(debug.Stack()))
+		return nil, errors.New(panicError.FormatAsSimple())
 	}
 	if config == nil {
-		return nil, errors.New("manager.NewManager(): config must been set")
+		panicError := common.NewPanicError(errors.New("config cannot be nil"), string(debug.Stack()))
+		return nil, errors.New(panicError.FormatAsSimple())
 	}
 
-	// 验证配置的合理性
-	if err := validateConfig(config); err != nil {
-		return nil, fmt.Errorf("manager.NewManager(): invalid config: %w", err)
+	err := config.MergeWithDefaults()
+	if err != nil {
+		panicError := common.NewPanicError(err, string(debug.Stack()))
+		return nil, errors.New(panicError.FormatAsSimple())
 	}
 
 	var queueEngine engine.Engine
 
 	switch config.EngineType {
-	case engine.TypeRedis:
+	case engine.REDIS:
 		queueEngine = engine.NewRedisEngine(redisx.Redis)
-	case engine.TypeChannel:
-		queueEngine = engine.NewChannelEngine()
+	case engine.CHANNEL:
+		queueEngine = engine.NewChannelEngine(
+			config.QueueSize,
+			config.Source,
+			config.Failed,
+			config.Processing,
+		)
 	default:
-		return nil, fmt.Errorf("manager.NewManager(): unsupported queue engine type: %s", config.EngineType)
+		panicError := common.NewPanicError(fmt.Errorf("unsupported queue engine type: %s", config.EngineType), string(debug.Stack()))
+		return nil, errors.New(panicError.FormatAsSimple())
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Manager{
 		engine:    queueEngine,
 		processor: processor,
 		config:    config,
-		stopChan:  make(chan struct{}),
+		stop:      make(chan struct{}),
 		status:    StatusStopped,
+		workers:   make([]*Worker, config.WorkerCount),
+		readers:   make([]*Reader, config.ReaderCount),
+		wg:        &sync.WaitGroup{},
+		mu:        sync.RWMutex{},
+		ctx:       ctx,
+		cancel:    cancel,
 	}, nil
-}
-
-// validateConfig 验证配置的合理性
-func validateConfig(config *Config) error {
-	if config.Source == "" {
-		return fmt.Errorf("source queue name cannot be empty")
-	}
-	if config.Failed == "" {
-		return fmt.Errorf("failed queue name cannot be empty")
-	}
-	if config.Processing == "" {
-		return fmt.Errorf("processing queue name cannot be empty")
-	}
-	if config.Retry == "" {
-		return fmt.Errorf("retry queue name cannot be empty")
-	}
-	if config.ReaderCount <= 0 {
-		return fmt.Errorf("reader count must be positive")
-	}
-	if config.WorkerCount <= 0 {
-		return fmt.Errorf("worker count must be positive")
-	}
-	if config.WorkerTimeout <= 0 {
-		return fmt.Errorf("worker timeout must be positive")
-	}
-	if config.MaxRetries < 0 {
-		return fmt.Errorf("max retries cannot be negative")
-	}
-	if config.RetryDelay <= 0 {
-		return fmt.Errorf("retry delay must be positive")
-	}
-	if config.MaxRetryDelay <= 0 {
-		return fmt.Errorf("max retry delay must be positive")
-	}
-	if config.RetryFactor <= 0 {
-		return fmt.Errorf("retry factor must be positive")
-	}
-	return nil
 }
 
 // Start 启动队列管理器
 func (m *Manager) Start() error {
 	if !atomic.CompareAndSwapInt32((*int32)(&m.status), int32(StatusStopped), int32(StatusRunning)) {
-		return fmt.Errorf("manager.Start(): manager is already running or stopping")
+		return common.ErrManagerAlreadyRunning
 	}
 
-	// 恢复处理中队列的未完成数据
-	if err := m.recoverProcessingQueue(); err != nil {
-		log.Printf("manager.Start(): [warning] Failed to recover processing queue: %v", err)
-	}
+	// 恢复之前的数据
+	m.recoverLastData()
 
 	// 启动读取协程
 	m.mu.Lock()
 	for i := 0; i < m.config.ReaderCount; i++ {
-		reader := NewReader(i, m.engine, m.config, &m.wg)
+		reader := NewReader(i, m.ctx, m.engine, m.config)
 		m.readers = append(m.readers, reader)
 		reader.Start()
 	}
@@ -132,7 +111,7 @@ func (m *Manager) Start() error {
 	// 启动工作协程
 	m.mu.Lock()
 	for i := 0; i < m.config.WorkerCount; i++ {
-		worker := NewWorker(i, m.engine, m.processor, m.config, &m.wg)
+		worker := NewWorker(i, m.ctx, m.engine, m.processor, m.config)
 		m.workers = append(m.workers, worker)
 		worker.Start()
 	}
@@ -141,13 +120,13 @@ func (m *Manager) Start() error {
 	// 如果启用了失败队列处理，启动失败队列处理协程
 	if m.config.EnableFailedQueue {
 		m.wg.Add(1)
-		go m.processFailedQueue()
+		go m.failedQueueProcessor()
 	}
 
 	// 如果启用了重试队列处理，启动重试队列处理协程
 	if m.config.EnableRetryQueue {
 		m.wg.Add(1)
-		go m.processRetryQueue()
+		go m.retryQueueProcessor()
 	}
 
 	log.Printf("manager.Start(): [Info] Queue manager(source: %s) started with %d readers and %d workers", m.config.Source, m.config.ReaderCount, m.config.WorkerCount)
@@ -157,64 +136,86 @@ func (m *Manager) Start() error {
 // Stop 停止队列管理器
 func (m *Manager) Stop(ctx context.Context) error {
 	if !atomic.CompareAndSwapInt32((*int32)(&m.status), int32(StatusRunning), int32(StatusStopping)) {
-		return fmt.Errorf("Manager.Stop(): manager is not running")
+		return common.ErrManagerNotRunning
 	}
 
 	log.Printf("Manager.Stop(): [Info] Stopping queue manager(name: %s)...", m.config.Source)
 
-	// 关闭停止通道
-	close(m.stopChan)
+	// 1. 发送停止信号
+	m.cancel()
+	close(m.stop)
 
-	// 停止所有读取协程
+	// 2. 并行停止所有组件
 	m.mu.RLock()
 	readers := make([]*Reader, len(m.readers))
 	copy(readers, m.readers)
-	m.mu.RUnlock()
-
-	for _, reader := range readers {
-		reader.Stop()
-	}
-
-	// 停止所有工作协程
-	m.mu.RLock()
 	workers := make([]*Worker, len(m.workers))
 	copy(workers, m.workers)
 	m.mu.RUnlock()
 
-	for _, worker := range workers {
-		worker.Stop()
-	}
+	// 并行停止 readers 和 workers
+	readerDone := make(chan struct{})
+	workerDone := make(chan struct{})
 
-	// 等待所有协程结束或上下文取消
-	done := make(chan struct{})
 	go func() {
-		m.wg.Wait()
-		close(done)
+		defer close(readerDone)
+		for _, reader := range readers {
+			reader.Stop()
+		}
 	}()
 
+	go func() {
+		defer close(workerDone)
+		for _, worker := range workers {
+			worker.Stop()
+		}
+	}()
+
+	// 3. 等待组件停止完成
+	componentTimeout := time.After(m.config.Timeout * 2)
+	m.waitForComponents("readers", readerDone, componentTimeout, ctx)
+	m.waitForComponents("workers", workerDone, componentTimeout, ctx)
+
+	// 4. 等待其他协程结束
+	otherDone := make(chan struct{})
+	go func() {
+		defer close(otherDone)
+		m.wg.Wait()
+	}()
+
+	otherTimeout := time.After(m.config.Timeout)
+	m.waitForComponents("other goroutines", otherDone, otherTimeout, ctx)
+
+	// 5. 清理资源
+	if err := m.engine.Close(); err != nil {
+		log.Printf("Manager.Stop(): [Error] Closing queue engine error: %v", err)
+	}
+
+	atomic.StoreInt32((*int32)(&m.status), int32(StatusStopped))
+	log.Printf("Manager.Stop(): [Info] Stopped queue (name: %s) successfully", m.config.Source)
+	return nil
+}
+
+// waitForComponents 等待组件停止完成
+func (m *Manager) waitForComponents(name string, done <-chan struct{}, timeout <-chan time.Time, ctx context.Context) {
 	select {
 	case <-done:
-		// 关闭队列引擎
-		if err := m.engine.Close(); err != nil {
-			log.Printf("Manager.Stop(): [Error] Closing queue (name: %s) engine error : %v", m.config.Source, err)
-		}
-		atomic.StoreInt32((*int32)(&m.status), int32(StatusStopped))
-		log.Printf("Manager.Stop(): [Info] Stopped queue (name: %s) successfully", m.config.Source)
-		return nil
+		log.Printf("Manager.Stop(): [Info] %s stopped", name)
+	case <-timeout:
+		log.Printf("Manager.Stop(): [Warning] %s stop timeout", name)
 	case <-ctx.Done():
-		log.Printf("Manager.Stop(): [Error] Stopping queue (name: %s) timeout: %v", m.config.Source, ctx.Err())
-		return ctx.Err()
+		log.Printf("Manager.Stop(): [Warning] %s stop cancelled: %v", name, ctx.Err())
 	}
 }
 
 // AddData 添加数据到队列
 func (m *Manager) AddData(ctx context.Context, data []byte) error {
 	if atomic.LoadInt32((*int32)(&m.status)) != int32(StatusRunning) {
-		return fmt.Errorf("manager.AddData(): queue manager(source: %s) is not running", m.config.Source)
+		return common.ErrManagerNotRunning
 	}
 
 	if len(data) == 0 {
-		return fmt.Errorf("manager.AddData(): data must been set")
+		return common.ErrItemEmpty
 	}
 
 	item := &DataItem{
@@ -223,11 +224,18 @@ func (m *Manager) AddData(ctx context.Context, data []byte) error {
 
 	itemData, err := item.ToJSON()
 	if err != nil {
-		return fmt.Errorf("manager.AddData(): marshal data item: %w", err)
+		return common.ErrItemJsonMarshalFailed
 	}
 
-	if err := m.engine.Push(ctx, m.config.Source, itemData); err != nil {
-		return fmt.Errorf("manager.AddData(): push to source queue(source: %s) error: %v", m.config.Source, err)
+	// 推送到源队列
+	if err := m.engine.PushBlocking(ctx, m.config.Source, itemData); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return common.ErrContextCanceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return common.ErrContextTimeout
+		}
+		return err
 	}
 
 	return nil
@@ -252,169 +260,80 @@ func (m *Manager) GetStats() map[string]interface{} {
 }
 
 // processFailedQueue 处理失败队列
-func (m *Manager) processFailedQueue() {
-	defer m.wg.Done()
-	defer recovery.GlobalPanicRecovery.Recover("异步队列失败队列处理协程[taurus-pro-storage/pkg/queue/manager.processFailedQueue()]")
+func (m *Manager) failedQueueProcessor() {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+		m.wg.Done()
+	}()
 
 	ticker := time.NewTicker(m.config.FailedInterval)
 	defer ticker.Stop()
 
-	log.Printf("Manager.processFailedQueue(): [Info] failed_queue(name: %s) processor started", m.config.Failed)
-
 	for {
 		select {
-		case <-m.stopChan:
-			log.Printf("Manager.processFailedQueue(): [Info] failed_queue(name: %s) processor stopped", m.config.Failed)
+		case <-m.stop:
+			log.Printf("Manager.failedQueueProcessor(): [Info] 失败队列(name: %s) 收到停止信号, 停止处理。", m.config.Failed)
+			return
+		case <-m.ctx.Done():
+			log.Printf("Manager.failedQueueProcessor(): [Info] 失败队列(name: %s) 上下文context取消, 停止处理。", m.config.Failed)
 			return
 		case <-ticker.C:
-			if err := m.processFailedQueueBatch(); err != nil {
-				log.Printf("Manager.processFailedQueue(): [Error] failed_queue(name: %s) batch process error: %v", m.config.Failed, err)
+			// 执行失败队列处理
+			if err := HandleFailedProcessorBatch(m.ctx, m.engine, m.processor, m.config); err != nil {
+				if errors.Is(err, context.Canceled) {
+					log.Printf("Manager.failedQueueProcessor(): [Info] 失败队列(name: %s) 上下文context取消, 停止处理。", m.config.Failed)
+					return
+				}
 			}
+
+			// 重置定时器，确保下次执行时间稳定
+			ticker.Reset(m.config.FailedInterval)
 		}
 	}
-}
-
-// processFailedQueueBatch 处理一批失败队列数据
-func (m *Manager) processFailedQueueBatch() error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer cancel()
-
-	items, err := m.engine.BatchPop(ctx, m.config.Failed, m.config.FailedBatch, time.Second*5)
-	if err != nil {
-		return fmt.Errorf("manager.processFailedQueueBatch(): batch pop from failed_queue(name: %s) error: %v", m.config.Failed, err)
-	}
-
-	if len(items) == 0 {
-		return nil
-	}
-
-	log.Printf("Manager.processFailedQueueBatch(): [Info] processing %d items from failed_queue(name: %s)", len(items), m.config.Failed)
-
-	for _, data := range items {
-		// 解析失败队列数据
-		item, err := FromJSON(data)
-		if err != nil {
-			log.Printf("Manager.processFailedQueueBatch(): [Error] parsing failed_queue data(name: %s) error: %v, data: %s", m.config.Failed, err, string(data))
-			continue
-		}
-
-		// 直接在这里处理一次，如果失败就记录日志落盘
-		ctx, cancel := context.WithTimeout(context.Background(), m.config.WorkerTimeout)
-		err = m.processor.Process(ctx, item.Data)
-		cancel()
-
-		if err != nil {
-			// 处理失败，记录日志落盘
-			log.Printf("Manager.processFailedQueueBatch(): [Error] Failed to process item %s after retries, discarding permanently. Error: %v, Data: %s",
-				item.ID, err, string(item.Data))
-		} else {
-			// 处理成功
-			log.Printf("Manager.processFailedQueueBatch(): [Info] Successfully processed item %s from failed_queue(name: %s)", item.ID, m.config.Failed)
-		}
-	}
-
-	return nil
 }
 
 // processRetryQueue 处理延迟重试队列
-func (m *Manager) processRetryQueue() {
-	defer m.wg.Done()
-	defer recovery.GlobalPanicRecovery.Recover("异步队列重试队列处理协程[taurus-pro-storage/pkg/queue/manager.processRetryQueue()]")
+func (m *Manager) retryQueueProcessor() {
+	defer func() {
+		if r := recover(); r != nil {
+			panicError := common.NewPanicError(r, string(debug.Stack()))
+			fmt.Println(panicError.FormatAsPretty())
+		}
+		m.wg.Done()
+	}()
 
 	ticker := time.NewTicker(m.config.RetryInterval)
 	defer ticker.Stop()
 
-	log.Printf("Manager.processRetryQueue(): [Info] retry_queue(name: %s) processor started", m.config.Retry)
-
 	for {
 		select {
-		case <-m.stopChan:
-			log.Printf("Manager.processRetryQueue(): [Info] retry_queue(name: %s) processor stopped", m.config.Retry)
+		case <-m.stop:
+			log.Printf("Manager.retryQueueProcessor(): [Info] 重试队列(name: %s) 收到停止信号, 停止处理。", m.config.Retry)
+			return
+		case <-m.ctx.Done():
+			log.Printf("Manager.retryQueueProcessor(): [Info] 重试队列(name: %s) 上下文context取消, 停止处理。", m.config.Retry)
 			return
 		case <-ticker.C:
-			if err := m.processRetryQueueBatch(); err != nil {
-				log.Printf("Manager.processRetryQueue(): [Error] retry_queue(name: %s) batch process error: %v", m.config.Retry, err)
+			// 执行重试队列处理
+			if err := HandleRetryProcessorBatch(m.ctx, m.engine, m.processor, m.config); err != nil {
+				if errors.Is(err, context.Canceled) {
+					log.Printf("Manager.retryQueueProcessor(): [Info] 重试队列(name: %s) 上下文context取消, 停止处理。", m.config.Retry)
+					return
+				}
 			}
+
+			// 重置定时器，确保下次执行时间稳定
+			ticker.Reset(m.config.RetryInterval)
 		}
 	}
 }
 
-// processRetryQueueBatch 处理一批重试队列数据
-func (m *Manager) processRetryQueueBatch() error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer cancel()
+// TODO : 恢复之前的数据, 后面在实现, 现在不实现。
+func (m *Manager) recoverLastData() error {
+	// 注意持久化的队列数据是无需恢复的，只是channel的队列数据需要恢复， 但是恢复的条件是在程序退出时，所有数据需要落盘
 
-	// 使用延迟队列的PopDelayed方法
-	items, err := m.engine.PopDelayed(ctx, m.config.Retry, m.config.RetryBatch)
-	if err != nil && err != redis.Nil {
-		return fmt.Errorf("pop delayed from retry queue: %w", err)
-	}
-
-	if len(items) == 0 {
-		return nil
-	}
-
-	log.Printf("Manager.processRetryQueueBatch(): [Info] processing %d items from retry_queue(name: %s)", len(items), m.config.Retry)
-
-	for _, data := range items {
-		// 解析数据
-		item, err := FromJSON(data)
-		if err != nil {
-			log.Printf("Manager.processRetryQueueBatch(): [Error] parsing retry_queue data(name: %s) error: %v", m.config.Retry, err)
-			// 尝试丢到失败队列
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-			pushErr := m.engine.Push(ctx, m.config.Failed, data)
-			cancel()
-			if pushErr != nil {
-				log.Printf("Manager.processRetryQueueBatch(): [Error] pushing failed item to failed_queue(name: %s) error: %v, data: %s, 数据丢弃。", m.config.Failed, pushErr, string(data))
-			}
-			continue
-		}
-
-		// 直接处理到期的数据
-		if err := m.processRetryItem(item, data); err != nil {
-			log.Printf("Manager.processRetryQueueBatch(): [Error] processing retry item(name: %s) error: %v", m.config.Retry, err)
-		}
-	}
-
-	return nil
-}
-
-// processRetryItem 处理单个重试项
-func (m *Manager) processRetryItem(item *DataItem, originalData []byte) error {
-	// 创建带超时的上下文用于处理数据
-	ctx, cancel := context.WithTimeout(context.Background(), m.config.WorkerTimeout)
-	defer cancel()
-
-	// 处理数据
-	err := m.processor.Process(ctx, item.Data)
-
-	if err != nil {
-		if err == context.DeadlineExceeded || err == context.Canceled {
-			log.Printf("Manager.processRetryItem(): [Error] retry item %s processing timeout, moving to failed_queue(name: %s)", item.ID, m.config.Failed)
-			return moveToFailedQueue(m.engine, m.config, originalData)
-		}
-
-		if IsRetryableError(err) && item.ShouldRetry(m.config) {
-			log.Printf("Manager.processRetryItem(): [Error] retry item %s processing failed with retryable error, scheduling retry", item.ID)
-			return handleRetry(m.engine, m.config, item, originalData)
-		}
-
-		// 重试次数已用完或不可重试的错误，移到失败队列
-		log.Printf("Manager.processRetryItem(): [Error] retry item %s processing failed with non-retryable error, moving to failed_queue(name: %s)", item.ID, m.config.Failed)
-		return moveToFailedQueue(m.engine, m.config, originalData)
-	}
-
-	// 处理成功，记录日志
-	log.Printf("Manager.processRetryItem(): [Info] Successfully processed item %s after %d retries", item.ID, item.RetryCount)
-	return nil
-}
-
-// recoverProcessingQueue 恢复处理中队列的未完成数据
-func (m *Manager) recoverProcessingQueue() error {
-	// 由于Processing队列现在是channel，无法获取所有数据
-	// 在启动时，channel中的数据会自动被Worker消费
-	// 所以这里不需要特殊的恢复逻辑
-	// log.Printf("Processing queue recovery not needed (using channel)")
 	return nil
 }
