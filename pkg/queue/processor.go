@@ -69,7 +69,7 @@ func (item *DataItem) CalculateNextRetryTime(cfg *Config) time.Time {
 	}
 
 	delay := cfg.RetryDelay
-	for i := 0; i < item.RetryCount; i++ {
+	for i := 0; i < item.RetryCount+1; i++ {
 		delay = time.Duration(float64(delay) * cfg.RetryFactor)
 		if delay > cfg.MaxRetryDelay {
 			delay = cfg.MaxRetryDelay

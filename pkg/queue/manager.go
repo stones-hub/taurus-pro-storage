@@ -103,8 +103,8 @@ func (m *Manager) Start() error {
 	m.mu.Lock()
 	for i := 0; i < m.config.ReaderCount; i++ {
 		reader := NewReader(i, m.ctx, m.engine, m.config)
-		m.readers = append(m.readers, reader)
-		reader.Start()
+		// m.readers = append(m.readers, reader)
+		m.readers[i] = reader
 	}
 	m.mu.Unlock()
 
@@ -112,10 +112,17 @@ func (m *Manager) Start() error {
 	m.mu.Lock()
 	for i := 0; i < m.config.WorkerCount; i++ {
 		worker := NewWorker(i, m.ctx, m.engine, m.processor, m.config)
-		m.workers = append(m.workers, worker)
-		worker.Start()
+		// m.workers = append(m.workers, worker)
+		m.workers[i] = worker
 	}
 	m.mu.Unlock()
+
+	for _, reader := range m.readers {
+		reader.Start()
+	}
+	for _, worker := range m.workers {
+		worker.Start()
+	}
 
 	// 如果启用了失败队列处理，启动失败队列处理协程
 	if m.config.EnableFailedQueue {
@@ -142,8 +149,8 @@ func (m *Manager) Stop(ctx context.Context) error {
 	log.Printf("Manager.Stop(): [Info] Stopping queue manager(name: %s)...", m.config.Source)
 
 	// 1. 发送停止信号
-	m.cancel()
-	close(m.stop)
+	close(m.stop) // 先关闭stop channel
+	m.cancel()    // 再取消context
 
 	// 2. 并行停止所有组件
 	m.mu.RLock()
@@ -288,9 +295,6 @@ func (m *Manager) failedQueueProcessor() {
 					return
 				}
 			}
-
-			// 重置定时器，确保下次执行时间稳定
-			ticker.Reset(m.config.FailedInterval)
 		}
 	}
 }
@@ -324,9 +328,6 @@ func (m *Manager) retryQueueProcessor() {
 					return
 				}
 			}
-
-			// 重置定时器，确保下次执行时间稳定
-			ticker.Reset(m.config.RetryInterval)
 		}
 	}
 }

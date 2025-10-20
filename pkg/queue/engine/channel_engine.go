@@ -259,6 +259,7 @@ func (e *ChannelEngine) PopDelayed(ctx context.Context, queue string, count int)
 	defer e.delayedQueueMu.Unlock()
 
 	var result [][]byte
+	var expiredTimestamps []int64
 	now := time.Now().Unix()
 
 	// 遍历所有到期的时间戳
@@ -276,7 +277,7 @@ func (e *ChannelEngine) PopDelayed(ctx context.Context, queue string, count int)
 			if len(dataArray) <= canTake {
 				// 全部取走
 				result = append(result, dataArray...)
-				delete(e.delayedQueue, timestamp)
+				expiredTimestamps = append(expiredTimestamps, timestamp) // 标记为过期
 			} else {
 				// 只取一部分
 				result = append(result, dataArray[:canTake]...)
@@ -284,6 +285,12 @@ func (e *ChannelEngine) PopDelayed(ctx context.Context, queue string, count int)
 			}
 		}
 	}
+
+	// 清理过期的时间戳
+	for _, timestamp := range expiredTimestamps {
+		delete(e.delayedQueue, timestamp)
+	}
+
 	return result, nil
 }
 
@@ -292,7 +299,9 @@ func (e *ChannelEngine) Close() error {
 	// 顺序：queuesMu -> delayedQueueMu
 
 	e.queuesMu.Lock()
+	defer e.queuesMu.Unlock()
 	e.delayedQueueMu.Lock()
+	defer e.delayedQueueMu.Unlock()
 
 	// 关闭所有队列
 	for _, ch := range e.queues {
@@ -302,10 +311,5 @@ func (e *ChannelEngine) Close() error {
 
 	// 清空延迟队列
 	e.delayedQueue = make(map[int64][][]byte)
-
-	// 按照获取顺序的反序释放锁
-	e.delayedQueueMu.Unlock()
-	e.queuesMu.Unlock()
-
 	return nil
 }

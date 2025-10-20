@@ -42,6 +42,9 @@ type Config struct {
 	RetryInterval    time.Duration // 重试队列检查间隔或超时时间
 	RetryBatch       int           // 每次处理的重试数据数量
 
+	// 数据落盘配置
+	EnableFailedDataToFile bool   // 是否启用数据落盘
+	FailedDataFilePath     string // 数据落盘路径
 }
 
 // DefaultConfig 返回默认配置
@@ -66,6 +69,9 @@ func DefaultConfig() *Config {
 		EnableRetryQueue: true,
 		RetryInterval:    time.Second * 10,
 		RetryBatch:       50,
+
+		EnableFailedDataToFile: true,
+		FailedDataFilePath:     "/tmp/failed_data.log",
 	}
 }
 
@@ -126,6 +132,14 @@ func (c *Config) MergeWithDefaults() error {
 		c.RetryBatch = defaults.RetryBatch
 	}
 
+	// 缺失：数据落盘配置合并
+	if !c.EnableFailedDataToFile {
+		c.EnableFailedDataToFile = defaults.EnableFailedDataToFile
+	}
+	if c.FailedDataFilePath == "" {
+		c.FailedDataFilePath = defaults.FailedDataFilePath
+	}
+
 	// 验证配置
 	return c.Validate()
 }
@@ -167,6 +181,9 @@ func (c *Config) Validate() error {
 	}
 	if c.EnableRetryQueue && c.RetryBatch <= 0 {
 		return fmt.Errorf("retry batch must be positive when retry queue is enabled, got %d", c.RetryBatch)
+	}
+	if c.EnableFailedDataToFile && c.FailedDataFilePath == "" {
+		return fmt.Errorf("failed data file path must be set when failed data to file is enabled, got %s", c.FailedDataFilePath)
 	}
 
 	return nil

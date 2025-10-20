@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/stones-hub/taurus-pro-storage/pkg/queue/common"
@@ -21,7 +24,10 @@ func PushToFailedQueueNonBlocking(ctx context.Context, engine engine.Engine, con
 	}()
 
 	if !config.EnableFailedQueue {
-		log.Printf("PushToFailedQueueNonBlocking(): [Info] 失败队列未启用, 将数据(%s)丢弃。", string(data))
+		err := SaveFailedDataToFile(config, data)
+		if err != nil {
+			log.Printf("PushToFailedQueueNonBlocking(): [Error] 失败队列未启用，将数据落盘到文件但失败(%v), 队列(%s)中的数据(%s)。", err, config.Source, string(data))
+		}
 		return nil
 	}
 
@@ -62,7 +68,7 @@ func PushToProcessingQueueNonBlocking(ctx context.Context, engine engine.Engine,
 	select {
 	case err := <-done:
 		if err != nil {
-			return common.ErrPushToProcessingQueue
+			return err
 		}
 		return nil
 	case <-time.After(config.Timeout):
@@ -80,7 +86,10 @@ func HandleRetry(ctx context.Context, engine engine.Engine, config *Config, item
 	}()
 
 	if !config.EnableRetryQueue {
-		log.Printf("HandleRetry(): [Info] 重试队列未启用, 将数据(%s)丢弃。", string(originalData))
+		err := SaveFailedDataToFile(config, originalData)
+		if err != nil {
+			log.Printf("HandleRetry(): [Error] 重试队列未启用，将数据落盘到文件但失败(%v), 队列(%s)中的数据(%s)。", err, config.Source, string(originalData))
+		}
 		return nil
 	}
 
@@ -98,17 +107,17 @@ func HandleRetry(ctx context.Context, engine engine.Engine, config *Config, item
 	// 转换为JSON
 	itemData, err := item.ToJSON()
 	if err != nil {
-		log.Printf("HandleRetry(): [Error] 转换为JSON错误(%v), 将数据(%s)移动到失败队列。", err, string(originalData))
+		// log.Printf("HandleRetry(): [Error] 转换为JSON错误(%v), 将数据(%s)移动到失败队列。", err, string(originalData))
 		return PushToFailedQueueNonBlocking(ctx, engine, config, originalData)
 	}
 
 	// 放入延迟重试队列
 	err = pushToRetryQueueNonBlocking(ctx, engine, config, itemData, delay)
 	if err != nil {
-		log.Printf("HandleRetry(): [Error] 放入延迟重试队列错误(%v), 将数据(%s)移动到失败队列。", err, string(originalData))
+		// log.Printf("HandleRetry(): [Error] 放入延迟重试队列错误(%v), 将数据(%s)移动到失败队列。", err, string(originalData))
 		return PushToFailedQueueNonBlocking(ctx, engine, config, originalData)
 	}
-	log.Printf("HandleRetry(): [Info] 成功处理重试(item: %s), 下次重试时间: %v, 重试次数: %d", item.ID, item.NextRetryTime, item.RetryCount)
+	// log.Printf("HandleRetry(): [Info] 成功处理重试(item: %s), 下次重试时间: %v, 重试次数: %d", item.ID, item.NextRetryTime, item.RetryCount)
 	return nil
 }
 
@@ -140,6 +149,7 @@ func pushToRetryQueueNonBlocking(ctx context.Context, engine engine.Engine, conf
 }
 
 // HandleFailedProcessorBatch 处理失败队列逻辑
+// 注意：失败队列的处理不需要重试
 func HandleFailedProcessorBatch(ctx context.Context, engine engine.Engine, processor Processor, config *Config) error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -163,14 +173,20 @@ func HandleFailedProcessorBatch(ctx context.Context, engine engine.Engine, proce
 		// 解析失败队列数据
 		item, err := FromJSON(data)
 		if err != nil {
-			log.Printf("HandleFailed(): [Error] 解析失败队列数据错误(%v), 将数据(%s)丢弃。", err, string(data))
+			err = SaveFailedDataToFile(config, data)
+			if err != nil {
+				log.Printf("HandleFailedProcessorBatch(): [Error] 解析失败队列数据错误，将数据落盘到文件但失败(%v), 队列(%s)中的数据(%s)。", err, config.Source, string(data))
+			}
 			continue
 		}
 
 		err = processor.Process(ctx, item.Data)
 		if err != nil {
-			// 错误队列的处理不需要重试，直接丢弃
-			log.Printf("HandleFailed(): [Error] 处理失败队列数据错误(%v), 将数据(%s)丢弃。", err, string(data))
+			log.Printf("HandleFailedProcessorBatch(): [Error] 处理失败队列数据错误(%v), 将数据落盘到文件。", err)
+			err := SaveFailedDataToFile(config, data)
+			if err != nil {
+				log.Printf("HandleFailedProcessorBatch(): [Error] 数据落盘到文件但失败(%v), 队列(%s)中的数据(%s)。", err, config.Source, string(data))
+			}
 			continue
 		}
 	}
@@ -196,12 +212,15 @@ func HandleRetryProcessorBatch(ctx context.Context, engine engine.Engine, proces
 		return nil
 	}
 
-	// 2. 循环或者开协程处理数据
+	// 2. 循环处理数据
 	for _, data := range items {
 		// 解析重试队列数据
 		item, err := FromJSON(data)
 		if err != nil {
-			log.Printf("HandleRetryProcessorBatch(): [Error] 解析重试队列数据错误(%v), 将数据(%s)丢弃。", err, string(data))
+			err = SaveFailedDataToFile(config, data)
+			if err != nil {
+				log.Printf("HandleRetryProcessorBatch(): [Error] 解析重试队列数据错误，将数据落盘到文件但失败(%v), 队列(%s)中的数据(%s)。", err, config.Source, string(data))
+			}
 			continue
 		}
 
@@ -210,12 +229,57 @@ func HandleRetryProcessorBatch(ctx context.Context, engine engine.Engine, proces
 		if err != nil {
 			if common.IsRetryableError(err) && item.ShouldRetry(config) {
 				log.Printf("HandleRetryProcessorBatch(): [Error] 处理重试队列数据错误(%v), 将数据(%s)重试。", err, string(data))
-				return HandleRetry(ctx, engine, config, item, data)
+				// 不return，继续处理其他item
+				HandleRetry(ctx, engine, config, item, data)
+				continue
 			}
-			log.Printf("HandleRetryProcessorBatch(): [Error] 处理重试队列数据错误(%v), 将数据(%s)丢弃。", err, string(data))
+
+			if common.IsErrorableError(err) {
+				log.Printf("HandleRetryProcessorBatch(): [Error] 处理重试队列数据错误(%v), 将数据(%s)移动到失败队列。", err, string(data))
+				PushToFailedQueueNonBlocking(ctx, engine, config, data)
+				continue
+			}
+
+			err = SaveFailedDataToFile(config, data)
+			if err != nil {
+				log.Printf("HandleRetryProcessorBatch(): [Error] 处理重试队列数据错误，将数据落盘到文件但失败(%v), 队列(%s)中的数据(%s)。", err, config.Source, string(data))
+			}
 			continue
 		}
 	}
 
+	return nil
+}
+
+var fileMutex sync.Mutex
+
+// 帮我创建一个工具函数，将无法处理的数据落盘
+func SaveFailedDataToFile(config *Config, data []byte) error {
+	if !config.EnableFailedDataToFile {
+		return nil
+	}
+
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
+
+	filePath := config.FailedDataFilePath
+
+	// 确保目录存在
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return common.ErrFailedDataToFileCreateDirFailed
+	}
+
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return common.ErrFailedDataToFileOpenFailed
+	}
+	defer file.Close()
+
+	dataWithNewline := append(data, '\n')
+	_, err = file.Write(dataWithNewline)
+	if err != nil {
+		return common.ErrFailedDataToFileWriteFailed
+	}
 	return nil
 }

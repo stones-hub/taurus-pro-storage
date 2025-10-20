@@ -223,4 +223,12 @@ var (
 	ErrContextCanceled = errors.New("上下文取消")
 	// ErrContextTimeout 上下文超时错误
 	ErrContextTimeout = errors.New("上下文超时")
+
+	// ================================ 数据落盘错误 ================================
+	// ErrFailedDataToFileOpenFailed 数据落盘文件打开失败错误
+	ErrFailedDataToFileOpenFailed = errors.New("数据落盘文件打开失败")
+	// ErrFailedDataToFileWriteFailed 数据落盘文件写入失败错误
+	ErrFailedDataToFileWriteFailed = errors.New("数据落盘文件写入失败")
+	// ErrFailedDataToFileCreateDirFailed 数据落盘目录创建失败错误
+	ErrFailedDataToFileCreateDirFailed = errors.New("数据落盘目录创建失败")
 )

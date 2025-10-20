@@ -73,7 +73,10 @@ func (w *Worker) Stop() {
 	}
 	w.closed = true
 	w.mu.Unlock()
+
+	// 先关闭stop channel，再取消context
 	close(w.stop)
+	w.cancel() // 取消context，强制停止goroutine
 
 	done := make(chan struct{})
 	go func() {
@@ -85,6 +88,7 @@ func (w *Worker) Stop() {
 		log.Printf("Worker.Stop(): [Info] Worker[%d]队列, 成功停止处理。", w.id)
 	case <-time.After(w.config.Timeout):
 		log.Printf("Worker.Stop(): [Error] Worker[%d]队列, 停止处理超时。", w.id)
+		// 即使超时，context已经被取消，goroutine会停止
 	}
 }
 
@@ -149,8 +153,12 @@ func (w *Worker) work() error {
 			return PushToFailedQueueNonBlocking(w.ctx, w.engine, w.config, data)
 		}
 
-		// 如果是其他错误，则当前数据丢失，无需处理
-		log.Printf("Worker.work(): [Error] Worker[%d]队列, 处理失败, 数据(%s)丢失。", w.id, string(data))
+		// 如果是其他错误，则当前数据落盘，无需处理
+		log.Printf("Worker.work(): [Error] Worker[%d]队列, 处理失败, 将数据(%s)落盘。", w.id, string(data))
+		err := SaveFailedDataToFile(w.config, data)
+		if err != nil {
+			log.Printf("Worker.work(): [Error] Worker[%d]队列, 处理失败, 将数据(%s)落盘但失败(%v)。", w.id, string(data), err)
+		}
 	}
 
 	return nil

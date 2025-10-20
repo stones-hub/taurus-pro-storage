@@ -66,8 +66,10 @@ func (r *Reader) Stop() {
 	}
 	r.closed = true
 	r.mu.Unlock()
-	// 关闭停止通道, 告诉协程无需再读取数据
+
+	// 先关闭stop channel，再取消context
 	close(r.stop)
+	r.cancel() // 取消context，强制停止goroutine
 
 	done := make(chan struct{})
 	go func() {
@@ -79,6 +81,7 @@ func (r *Reader) Stop() {
 		log.Printf("Reader.Stop(): [Info] Reader[%d]队列, 成功停止读取。", r.id)
 	case <-time.After(r.config.Timeout):
 		log.Printf("Reader.Stop(): [Error] Reader[%d]队列, 停止读取超时。", r.id)
+		// 即使超时，context已经被取消，goroutine会停止
 	}
 }
 
@@ -127,7 +130,7 @@ func (r *Reader) read() error {
 	}
 
 	// 2. 解析数据 - 纯内存操作，不需要context
-	_, err = FromJSON(data)
+	item, err := FromJSON(data)
 	if err != nil {
 		// 格式错误的数据移到失败队列
 		// 移动到失败队列需要超时控制，避免长时间阻塞
@@ -139,8 +142,8 @@ func (r *Reader) read() error {
 	// 这里设置超时是因为我们不想因为处理队列满而长时间阻塞
 	err = PushToProcessingQueueNonBlocking(r.ctx, r.engine, r.config, data)
 	if err != nil {
-		log.Printf("Reader.read(): [Error] Reader[%d]队列, 将数据(%s)移动到处理中队列错误(%v), 数据将丢失。", r.id, string(data), err)
-		return err
+		log.Printf("Reader.read(): [Error] Reader[%d]队列, 将数据(%s)移动到处理中队列错误(%v), 数据将移动到重试队列。", r.id, string(data), err)
+		return HandleRetry(r.ctx, r.engine, r.config, item, data)
 	}
 
 	return nil
