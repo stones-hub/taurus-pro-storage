@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/stones-hub/taurus-pro-storage/pkg/queue/common"
 	"github.com/stones-hub/taurus-pro-storage/pkg/redisx"
 )
+
+const redisBlockingPopPollInterval = time.Second * 2
 
 // RedisEngine Redis队列引擎实现
 type RedisEngine struct {
@@ -55,13 +58,32 @@ func (e *RedisEngine) PopBlocking(ctx context.Context, queue string) ([]byte, er
 		}
 	}()
 
-	// 使用BRPOP命令，超时时间设为0表示无限等待
-	result, err := e.client.GetClient().BRPop(ctx, 0, queue).Result()
-	if err != nil {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		// Redis 的 BRPOP 在 timeout=0 时会无限阻塞，空队列关闭时无法及时退出。
+		// 这里改成短阻塞轮询，让 goroutine 最多等待一个轮询周期就能响应取消。
+		result, err := e.client.GetClient().BRPop(ctx, redisBlockingPopPollInterval, queue).Result()
+		if err == nil {
+			if len(result) < 2 {
+				return nil, fmt.Errorf("BRPOP returned unexpected result length: %d", len(result))
+			}
+			// BRPOP 返回 [key, value]，我们需要第二个元素
+			return []byte(result[1]), nil
+		}
+
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, ctx.Err()
+		}
+		if err == redis.Nil {
+			continue
+		}
 		return nil, err
 	}
-	// BRPOP 返回 [key, value]，我们需要第二个元素
-	return []byte(result[1]), nil
 }
 
 // PopNonBlocking 非阻塞读取，立即返回，无数据时返回特定错误

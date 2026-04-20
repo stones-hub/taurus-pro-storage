@@ -179,9 +179,8 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}()
 
 	// 3. 等待组件停止完成
-	componentTimeout := time.After(m.config.Timeout * 2)
-	m.waitForComponents("readers", readerDone, componentTimeout, ctx)
-	m.waitForComponents("workers", workerDone, componentTimeout, ctx)
+	m.waitForComponents("readers", readerDone, time.After(m.config.Timeout), ctx)
+	m.waitForComponents("workers", workerDone, time.After(m.config.Timeout), ctx)
 
 	// 4. 等待其他协程结束
 	otherDone := make(chan struct{})

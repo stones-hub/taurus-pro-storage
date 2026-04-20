@@ -1,0 +1,4 @@
+2026-04-20 14:52:17 [INFO] Test info message
+2026-04-20 14:52:17 [ERROR] Test error message
+2026-04-20 14:52:17 [WARN] Warn message
+2026-04-20 14:52:17 [ERROR] Error message
