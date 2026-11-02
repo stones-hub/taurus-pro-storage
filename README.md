@@ -1,6 +1,6 @@
 # Taurus Pro Storage
 
-[![Go Version](https://img.shields.io/badge/Go-1.24.2+-blue.svg)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.27.3+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/stones-hub/taurus-pro-storage)](https://goreportcard.com/report/github.com/stones-hub/taurus-pro-storage)
 
