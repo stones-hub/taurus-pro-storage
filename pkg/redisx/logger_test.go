@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,9 +14,8 @@ import (
 
 func TestRedisLogger(t *testing.T) {
 	// 清理测试文件
-	testLogFile := "./testdata/redis_test.log"
+	testLogFile := filepath.Join(testLogDir, "redis_test.log")
 	os.Remove(testLogFile)
-	os.MkdirAll("./testdata", 0755)
 
 	t.Run("Create Logger with File", func(t *testing.T) {
 		logger, err := NewRedisLogger(
@@ -69,9 +69,8 @@ func TestRedisLogger(t *testing.T) {
 
 func TestRedisLogHook(t *testing.T) {
 	// 清理测试文件
-	testLogFile := "./testdata/redis_hook_test.log"
+	testLogFile := filepath.Join(testLogDir, "redis_hook_test.log")
 	os.Remove(testLogFile)
-	os.MkdirAll("./testdata", 0755)
 
 	logger, err := NewRedisLogger(
 		WithLogFilePath(testLogFile),
@@ -88,9 +87,8 @@ func TestRedisLogHook(t *testing.T) {
 
 func TestRedisWithLogging(t *testing.T) {
 	// 清理测试文件
-	testLogFile := "./testdata/redis_integration_test.log"
+	testLogFile := filepath.Join(testLogDir, "redis_integration_test.log")
 	os.Remove(testLogFile)
-	os.MkdirAll("./testdata", 0755)
 
 	// 创建日志记录器
 	logger, err := NewRedisLogger(
@@ -107,7 +105,7 @@ func TestRedisWithLogging(t *testing.T) {
 
 	// 为当前测试创建一个临时的Redis客户端
 	err = InitRedis(
-		WithAddrs("localhost:6379"),
+		WithAddrs(testRedisAddr()),
 		WithPassword(""),
 		WithDB(0),
 		WithLogging(logger),
@@ -182,9 +180,8 @@ func TestLogFormatters(t *testing.T) {
 
 func TestCustomLogFormatter(t *testing.T) {
 	// 清理测试文件
-	testLogFile := "./testdata/custom_formatter_test.log"
+	testLogFile := filepath.Join(testLogDir, "custom_formatter_test.log")
 	os.Remove(testLogFile)
-	os.MkdirAll("./testdata", 0755)
 
 	// 自定义格式化函数
 	customFormatter := func(level LogLevel, message string) string {

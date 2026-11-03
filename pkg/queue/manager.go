@@ -24,316 +24,429 @@ const (
 	StatusStopping
 )
 
+const (
+	// settleTimeout Ack/Retry/Fail/Renew 使用独立的限时 ctx，不受 Stop 取消影响
+	settleTimeout = 5 * time.Second
+	// stopGrace 到达排空期限并取消 Processor ctx 后，再等待 Processor 自行退出的时间
+	stopGrace = 2 * time.Second
+	// maxReasonLen 失败/重试原因的最大长度
+	maxReasonLen = 1024
+)
+
+// FailedMessage 失败留存中的任务
+type FailedMessage = engine.FailedMessage
+
 // Manager 队列管理器
+//
+// 投递语义：至少一次。Redis 引擎下，AddData 返回 nil 只表示任务已被 Redis 接收，
+// 不表示业务已完成，也不表示 Redis 本身不会丢数据（取决于部署的持久化/复制配置）；
+// Processor 可能因崩溃恢复、租约到期被接管等原因重复收到同一任务，必须幂等。
+// Manager 为单次生命周期：Stop 之后不能再次 Start。
 type Manager struct {
-	engine    engine.Engine
+	eng       engine.ReliableEngine
 	processor Processor
 	config    *Config
-	workers   []*Worker
-	readers   []*Reader
-	wg        *sync.WaitGroup
-	stop      chan struct{}
-	status    Status
-	mu        sync.RWMutex // 保护workers和readers切片的并发访问
-	ctx       context.Context
-	cancel    context.CancelFunc
+
+	mu     sync.RWMutex // 保护 status/used 及 context 字段
+	status Status
+	used   bool
+
+	claimCtx    context.Context // 取消后停止领取新任务
+	claimCancel context.CancelFunc
+	procCtx     context.Context // 传给 Processor；仅在排空超时后取消
+	procCancel  context.CancelFunc
+	wg          sync.WaitGroup
+
+	inflight atomic.Int64
 }
 
 // NewManager 创建一个新的队列管理器
 func NewManager(processor Processor, config *Config) (*Manager, error) {
 	if processor == nil {
-		panicError := common.NewPanicError(errors.New("processor cannot be nil"), string(debug.Stack()))
-		return nil, errors.New(panicError.FormatAsSimple())
+		return nil, errors.New("processor cannot be nil")
 	}
 	if config == nil {
-		panicError := common.NewPanicError(errors.New("config cannot be nil"), string(debug.Stack()))
-		return nil, errors.New(panicError.FormatAsSimple())
+		return nil, errors.New("config cannot be nil")
+	}
+	// 在副本上合并，避免改写调用方传入的配置
+	cfg := *config
+	if err := cfg.MergeWithDefaults(); err != nil {
+		return nil, fmt.Errorf("invalid queue config: %w", err)
+	}
+	cfg.warnDeprecated()
+
+	opts := engine.ReliableOptions{
+		Name:            cfg.Source,
+		LeaseDuration:   cfg.LeaseDuration,
+		DedupWindow:     cfg.DedupWindow,
+		FailedRetention: cfg.FailedRetention,
+		Capacity:        cfg.QueueSize,
 	}
 
-	err := config.MergeWithDefaults()
-	if err != nil {
-		panicError := common.NewPanicError(err, string(debug.Stack()))
-		return nil, errors.New(panicError.FormatAsSimple())
-	}
-
-	var queueEngine engine.Engine
-
-	switch config.EngineType {
+	var eng engine.ReliableEngine
+	var err error
+	switch cfg.EngineType {
 	case engine.REDIS:
-		queueEngine = engine.NewRedisEngine(redisx.Redis)
+		client := cfg.RedisClient
+		if client == nil {
+			client = redisx.Redis
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), settleTimeout)
+		defer cancel()
+		eng, err = engine.NewRedisStreamEngine(ctx, client, opts)
 	case engine.CHANNEL:
-		queueEngine = engine.NewChannelEngine(
-			config.QueueSize,
-			config.Source,
-			config.Failed,
-			config.Processing,
-		)
+		eng, err = engine.NewMemoryEngine(opts)
 	default:
-		panicError := common.NewPanicError(fmt.Errorf("unsupported queue engine type: %s", config.EngineType), string(debug.Stack()))
-		return nil, errors.New(panicError.FormatAsSimple())
+		err = fmt.Errorf("unsupported queue engine type: %s", cfg.EngineType)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	return &Manager{
-		engine:    queueEngine,
-		processor: processor,
-		config:    config,
-		stop:      make(chan struct{}),
-		status:    StatusStopped,
-		workers:   make([]*Worker, config.WorkerCount),
-		readers:   make([]*Reader, config.ReaderCount),
-		wg:        &sync.WaitGroup{},
-		mu:        sync.RWMutex{},
-		ctx:       ctx,
-		cancel:    cancel,
-	}, nil
+	return &Manager{eng: eng, processor: processor, config: &cfg}, nil
 }
 
-// Start 启动队列管理器
+// Start 启动队列管理器。Manager 只能启动一次：已在运行返回 ErrManagerAlreadyRunning，
+// 已经停止过返回 ErrManagerClosed。
 func (m *Manager) Start() error {
-	if !atomic.CompareAndSwapInt32((*int32)(&m.status), int32(StatusStopped), int32(StatusRunning)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.status != StatusStopped {
 		return common.ErrManagerAlreadyRunning
 	}
-
-	// 恢复之前的数据
-	m.recoverLastData()
-
-	// 启动读取协程
-	m.mu.Lock()
-	for i := 0; i < m.config.ReaderCount; i++ {
-		reader := NewReader(i, m.ctx, m.engine, m.config)
-		// m.readers = append(m.readers, reader)
-		m.readers[i] = reader
+	if m.used {
+		return common.ErrManagerClosed
 	}
-	m.mu.Unlock()
+	m.used = true
+	m.claimCtx, m.claimCancel = context.WithCancel(context.Background())
+	m.procCtx, m.procCancel = context.WithCancel(context.Background())
+	m.status = StatusRunning
 
-	// 启动工作协程
-	m.mu.Lock()
 	for i := 0; i < m.config.WorkerCount; i++ {
-		worker := NewWorker(i, m.ctx, m.engine, m.processor, m.config)
-		// m.workers = append(m.workers, worker)
-		m.workers[i] = worker
-	}
-	m.mu.Unlock()
-
-	for _, reader := range m.readers {
-		reader.Start()
-	}
-	for _, worker := range m.workers {
-		worker.Start()
-	}
-
-	// 如果启用了失败队列处理，启动失败队列处理协程
-	if m.config.EnableFailedQueue {
 		m.wg.Add(1)
-		go m.failedQueueProcessor()
+		go m.workerLoop(i)
 	}
-
-	// 如果启用了重试队列处理，启动重试队列处理协程
-	if m.config.EnableRetryQueue {
-		m.wg.Add(1)
-		go m.retryQueueProcessor()
-	}
-
-	log.Printf("manager.Start(): [Info] Queue manager(source: %s) started with %d readers and %d workers", m.config.Source, m.config.ReaderCount, m.config.WorkerCount)
+	log.Printf("manager.Start(): [Info] Queue manager(source: %s, engine: %s) started with %d workers", m.config.Source, m.config.EngineType, m.config.WorkerCount)
 	return nil
 }
 
-// Stop 停止队列管理器
+// Stop 停止队列管理器：立即停止领取新任务，在 min(ctx, Config.Timeout) 内等待在途任务完成。
+// 超时则取消 Processor 的 ctx 并再给少量时间退出，仍返回 ErrStopTimeout；
+// 未确认的任务保留租约，到期后可被恢复。Processor 不响应取消时其 goroutine 会继续运行，
+// 这种情况下 Stop 如实返回错误，而不是假装已停止。
 func (m *Manager) Stop(ctx context.Context) error {
-	if !atomic.CompareAndSwapInt32((*int32)(&m.status), int32(StatusRunning), int32(StatusStopping)) {
+	m.mu.Lock()
+	if m.status != StatusRunning {
+		m.mu.Unlock()
 		return common.ErrManagerNotRunning
 	}
+	m.status = StatusStopping
+	m.mu.Unlock()
 
-	log.Printf("Manager.Stop(): [Info] Stopping queue manager(name: %s)...", m.config.Source)
+	log.Printf("Manager.Stop(): [Info] Stopping queue manager(source: %s)...", m.config.Source)
+	m.claimCancel()
 
-	// 1. 发送停止信号
-	close(m.stop) // 先关闭stop channel
-	m.cancel()    // 再取消context
-
-	// 2. 并行停止所有组件
-	m.mu.RLock()
-	readers := make([]*Reader, len(m.readers))
-	copy(readers, m.readers)
-	workers := make([]*Worker, len(m.workers))
-	copy(workers, m.workers)
-	m.mu.RUnlock()
-
-	// 并行停止 readers 和 workers
-	readerDone := make(chan struct{})
-	workerDone := make(chan struct{})
-
+	done := make(chan struct{})
 	go func() {
-		defer close(readerDone)
-		for _, reader := range readers {
-			reader.Stop()
-		}
-	}()
-
-	go func() {
-		defer close(workerDone)
-		for _, worker := range workers {
-			worker.Stop()
-		}
-	}()
-
-	// 3. 等待组件停止完成
-	m.waitForComponents("readers", readerDone, time.After(m.config.Timeout), ctx)
-	m.waitForComponents("workers", workerDone, time.After(m.config.Timeout), ctx)
-
-	// 4. 等待其他协程结束
-	otherDone := make(chan struct{})
-	go func() {
-		defer close(otherDone)
 		m.wg.Wait()
+		close(done)
 	}()
 
-	otherTimeout := time.After(m.config.Timeout)
-	m.waitForComponents("other goroutines", otherDone, otherTimeout, ctx)
-
-	// 5. 清理资源
-	if err := m.engine.Close(); err != nil {
-		log.Printf("Manager.Stop(): [Error] Closing queue engine error: %v", err)
-	}
-
-	atomic.StoreInt32((*int32)(&m.status), int32(StatusStopped))
-	log.Printf("Manager.Stop(): [Info] Stopped queue (name: %s) successfully", m.config.Source)
-	return nil
-}
-
-// waitForComponents 等待组件停止完成
-func (m *Manager) waitForComponents(name string, done <-chan struct{}, timeout <-chan time.Time, ctx context.Context) {
+	timer := time.NewTimer(m.config.Timeout)
+	defer timer.Stop()
+	var stopErr error
 	select {
 	case <-done:
-		log.Printf("Manager.Stop(): [Info] %s stopped", name)
-	case <-timeout:
-		log.Printf("Manager.Stop(): [Warning] %s stop timeout", name)
+	case <-timer.C:
+		stopErr = fmt.Errorf("%w: drain timeout %v", common.ErrStopTimeout, m.config.Timeout)
 	case <-ctx.Done():
-		log.Printf("Manager.Stop(): [Warning] %s stop cancelled: %v", name, ctx.Err())
+		stopErr = fmt.Errorf("%w: %v", common.ErrStopTimeout, ctx.Err())
 	}
+
+	if stopErr != nil {
+		m.procCancel()
+		grace := time.NewTimer(stopGrace)
+		defer grace.Stop()
+		select {
+		case <-done:
+		case <-grace.C:
+			stopErr = fmt.Errorf("%w (%d tasks still running, leases will expire and be recovered)", stopErr, m.inflight.Load())
+		}
+	}
+	m.procCancel()
+
+	m.mu.Lock()
+	m.status = StatusStopped
+	m.mu.Unlock()
+
+	select {
+	case <-done:
+		if err := m.eng.Close(); err != nil && stopErr == nil {
+			stopErr = fmt.Errorf("close queue engine: %w", err)
+		}
+	default:
+	}
+	if stopErr != nil {
+		log.Printf("Manager.Stop(): [Error] queue(source: %s): %v", m.config.Source, stopErr)
+		return stopErr
+	}
+	log.Printf("Manager.Stop(): [Info] Stopped queue (source: %s) successfully", m.config.Source)
+	return nil
 }
 
-// AddData 添加数据到队列
+// AddData 添加数据到队列，任务ID自动生成。
+//
+// 返回 nil 仅表示 Redis 已接收该任务，不表示业务完成。网络超时/断连时结果不确定
+// （任务可能已入队）；此时重试 AddData 会产生新的任务，可能重复。需要安全重试请使用 AddDataWithID。
 func (m *Manager) AddData(ctx context.Context, data []byte) error {
-	if atomic.LoadInt32((*int32)(&m.status)) != int32(StatusRunning) {
+	return m.add(ctx, GenerateID(), data, false)
+}
+
+// AddDataWithID 使用调用方指定的稳定ID添加数据，可安全重试。
+//
+// 去重契约：同一个ID，若任务尚未完成（待处理/执行中/待重试）或处于失败留存，再次提交
+// 相同内容视为重复并返回 nil，内容不同返回 common.ErrIDConflict；任务成功完成后，
+// 该ID在 Config.DedupWindow 内仍按同样规则去重，窗口过后同一ID会被当作新任务。
+// 未完成的任务不会因窗口过期而被覆盖。
+func (m *Manager) AddDataWithID(ctx context.Context, id string, data []byte) error {
+	if err := engine.ValidateID(id); err != nil {
+		return fmt.Errorf("task id %q: %w", id, err)
+	}
+	return m.add(ctx, id, data, true)
+}
+
+func (m *Manager) add(ctx context.Context, id string, data []byte, dedup bool) error {
+	if m.GetStatus() != StatusRunning {
 		return common.ErrManagerNotRunning
 	}
-
 	if len(data) == 0 {
 		return common.ErrItemEmpty
 	}
-
-	item := &DataItem{
-		Data: data,
+	if _, err := m.eng.Enqueue(ctx, id, data, dedup); err != nil {
+		return mapContextErr(err)
 	}
-
-	itemData, err := item.ToJSON()
-	if err != nil {
-		return common.ErrItemJsonMarshalFailed
-	}
-
-	// 推送到源队列
-	if err := m.engine.PushBlocking(ctx, m.config.Source, itemData); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return common.ErrContextCanceled
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return common.ErrContextTimeout
-		}
-		return err
-	}
-
 	return nil
+}
+
+func mapContextErr(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w: %v", common.ErrContextCanceled, err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %v", common.ErrContextTimeout, err)
+	}
+	return err
+}
+
+// ListFailed 返回失败留存中最早的至多 limit 条任务（1 <= limit <= 1000）。
+// 不会自动重新处理；处理后用 ReplayFailed 重放。channel 引擎的失败留存同样只在进程内。
+func (m *Manager) ListFailed(ctx context.Context, limit int) ([]FailedMessage, error) {
+	return m.eng.ListFailed(ctx, limit)
+}
+
+// ReplayFailed 将失败任务以同一ID转回就绪队列，重试预算重置。
+// 重放失败（如 Redis 出错、任务不在失败留存）时原记录保持不变。
+func (m *Manager) ReplayFailed(ctx context.Context, id string) error {
+	return m.eng.ReplayFailed(ctx, id)
 }
 
 // GetStatus 获取管理器状态
 func (m *Manager) GetStatus() Status {
-	return Status(atomic.LoadInt32((*int32)(&m.status)))
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.status
 }
 
 // GetStats 获取管理器统计信息
 func (m *Manager) GetStats() map[string]interface{} {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	return map[string]interface{}{
-		"status":  m.GetStatus(),
-		"readers": len(m.readers),
-		"workers": len(m.workers),
-		"config":  m.config,
+		"status":   m.GetStatus(),
+		"workers":  m.config.WorkerCount,
+		"inflight": m.inflight.Load(),
+		"config":   *m.config,
 	}
 }
 
-// processFailedQueue 处理失败队列
-func (m *Manager) failedQueueProcessor() {
+// ---------------------------------------------------------------------------
+// worker
+
+func (m *Manager) workerLoop(id int) {
+	defer m.wg.Done()
+	for m.claimCtx.Err() == nil {
+		m.workOnce(id)
+	}
+}
+
+// workOnce 领取并处理至多一个任务；任何 panic 都被隔离，worker 继续服务
+func (m *Manager) workOnce(id int) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			pe := common.NewPanicError(r, string(debug.Stack()))
+			log.Printf("Manager.worker[%d]: [Error] internal panic recovered: %s", id, pe.FormatAsSimple())
+			m.sleep(time.Second)
 		}
-		m.wg.Done()
 	}()
 
-	ticker := time.NewTicker(m.config.FailedInterval)
-	defer ticker.Stop()
+	// 在发出领取请求之前记录时刻：服务端租约从脚本执行时算起，晚于该时刻，
+	// 所以以它作为本地租约起点是保守的（不会比服务端更晚判定过期）。
+	receiveStart := time.Now()
+	d, err := m.eng.Receive(m.claimCtx)
+	switch {
+	case err == nil:
+		m.handle(id, d, receiveStart)
+	case errors.Is(err, common.ErrQueueEmpty):
+		m.sleep(m.config.PollInterval)
+	case m.claimCtx.Err() != nil:
+		// 正在停止
+	default:
+		log.Printf("Manager.worker[%d]: [Error] receive failed: %v", id, err)
+		m.sleep(time.Second)
+	}
+}
 
+func (m *Manager) sleep(d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-m.claimCtx.Done():
+	}
+}
+
+func (m *Manager) handle(id int, d *engine.Delivery, leaseStart time.Time) {
+	m.inflight.Add(1)
+	defer m.inflight.Add(-1)
+
+	ctx, cancel := context.WithCancel(m.procCtx)
+	defer cancel()
+
+	var leaseLost atomic.Bool
+	renewDone := make(chan struct{})
+	go func() {
+		defer close(renewDone)
+		m.renewLoop(ctx, cancel, d, leaseStart, &leaseLost)
+	}()
+
+	err := m.safeProcess(ctx, d)
+	cancel()
+	<-renewDone
+
+	m.settle(id, d, err, leaseLost.Load())
+}
+
+// safeProcess 调用 Processor，panic 转为 *common.PanicError
+func (m *Manager) safeProcess(ctx context.Context, d *engine.Delivery) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = common.NewPanicError(r, string(debug.Stack()))
+		}
+	}()
+	return m.processor.Process(ctx, d.Data)
+}
+
+// renewLoop 在 Processor 运行期间自动续租。续租确认凭证失效，或持续无法确认以致本地认为
+// 租约已过期时，取消 Processor 的 ctx 并标记 leaseLost，后续不再据此任务做失败/重试转移。
+func (m *Manager) renewLoop(ctx context.Context, cancel context.CancelFunc, d *engine.Delivery, leaseStart time.Time, leaseLost *atomic.Bool) {
+	lease := m.config.LeaseDuration
+	interval := lease / 3
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	lastOK := leaseStart
 	for {
 		select {
-		case <-m.stop:
-			log.Printf("Manager.failedQueueProcessor(): [Info] 失败队列(name: %s) 收到停止信号, 停止处理。", m.config.Failed)
-			return
-		case <-m.ctx.Done():
-			log.Printf("Manager.failedQueueProcessor(): [Info] 失败队列(name: %s) 上下文context取消, 停止处理。", m.config.Failed)
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// 执行失败队列处理
-			if err := HandleFailedProcessorBatch(m.ctx, m.engine, m.processor, m.config); err != nil {
-				if errors.Is(err, context.Canceled) {
-					log.Printf("Manager.failedQueueProcessor(): [Info] 失败队列(name: %s) 上下文context取消, 停止处理。", m.config.Failed)
-					return
-				}
+		}
+		sentAt := time.Now() // 续租请求发送前的时刻；成功后以它（而非响应到达时刻）作为新的本地租约起点
+		rctx, rcancel := context.WithTimeout(context.Background(), interval)
+		err := m.eng.Renew(rctx, d)
+		rcancel()
+		switch {
+		case err == nil:
+			lastOK = sentAt
+		case errors.Is(err, common.ErrLeaseLost):
+			log.Printf("Manager.renew: [Warning] task %s lease lost (taken over or finished elsewhere), cancelling processor", d.ID)
+			leaseLost.Store(true)
+			cancel()
+			return
+		default:
+			log.Printf("Manager.renew: [Warning] task %s renew failed: %v", d.ID, err)
+			if time.Since(lastOK) >= lease {
+				log.Printf("Manager.renew: [Error] task %s lease presumed expired, cancelling processor", d.ID)
+				leaseLost.Store(true)
+				cancel()
+				return
 			}
 		}
 	}
 }
 
-// processRetryQueue 处理延迟重试队列
-func (m *Manager) retryQueueProcessor() {
-	defer func() {
-		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
-		}
-		m.wg.Done()
-	}()
+// settle 依据 Processor 结果确认/重试/失败留存。所有转移使用独立限时 ctx。
+func (m *Manager) settle(id int, d *engine.Delivery, procErr error, leaseLost bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), settleTimeout)
+	defer cancel()
 
-	ticker := time.NewTicker(m.config.RetryInterval)
-	defer ticker.Stop()
+	// 租约已失效（凭证被拒，或本地推定过期）：不论 Processor 返回 nil、错误还是 panic，
+	// 都不再确认/重试/失败转移，任务留给持有当前凭证的实例或租约到期后的恢复。
+	if leaseLost {
+		log.Printf("Manager.worker[%d]: [Warning] task %s lease lost; skipping ack/retry/fail (processor result: %v)", id, d.ID, procErr)
+		return
+	}
 
-	for {
-		select {
-		case <-m.stop:
-			log.Printf("Manager.retryQueueProcessor(): [Info] 重试队列(name: %s) 收到停止信号, 停止处理。", m.config.Retry)
-			return
-		case <-m.ctx.Done():
-			log.Printf("Manager.retryQueueProcessor(): [Info] 重试队列(name: %s) 上下文context取消, 停止处理。", m.config.Retry)
-			return
-		case <-ticker.C:
-			// 执行重试队列处理
-			if err := HandleRetryProcessorBatch(m.ctx, m.engine, m.processor, m.config); err != nil {
-				if errors.Is(err, context.Canceled) {
-					log.Printf("Manager.retryQueueProcessor(): [Info] 重试队列(name: %s) 上下文context取消, 停止处理。", m.config.Retry)
-					return
-				}
-			}
+	if procErr == nil {
+		if err := m.eng.Ack(ctx, d); err != nil {
+			log.Printf("Manager.worker[%d]: [Error] ack task %s failed: %v (task may be redelivered)", id, d.ID, err)
 		}
+		return
+	}
+
+	// 停止超时取消 ctx 导致的返回不是业务结论，保留任务等待恢复（panic 仍是明确结论）
+	var pe *common.PanicError
+	isPanic := errors.As(procErr, &pe)
+	if !isPanic && m.procCtx.Err() != nil {
+		log.Printf("Manager.worker[%d]: [Warning] task %s interrupted (%v); left for recovery", id, d.ID, procErr)
+		return
+	}
+
+	reason := truncate(procErr.Error())
+	retryable := isPanic || common.IsRetryableError(procErr)
+	if isPanic {
+		reason = truncate(fmt.Sprintf("panic: %v", pe.GetPanicInfo()["panic"]))
+		log.Printf("Manager.worker[%d]: [Error] processor panic on task %s: %s", id, d.ID, pe.FormatAsSimple())
+	}
+
+	if retryable && d.Retries < m.config.MaxRetries {
+		delay := retryDelay(m.config, d.Retries)
+		if err := m.eng.Retry(ctx, d, delay, reason); err != nil {
+			log.Printf("Manager.worker[%d]: [Error] retry task %s failed: %v (task will be recovered after lease expiry)", id, d.ID, err)
+		}
+		return
+	}
+	if retryable {
+		reason = "retries exhausted: " + reason
+	}
+	if err := m.eng.Fail(ctx, d, reason); err != nil {
+		log.Printf("Manager.worker[%d]: [Error] retain failed task %s failed: %v (task will be recovered after lease expiry)", id, d.ID, err)
 	}
 }
 
-// TODO : 恢复之前的数据, 后面在实现, 现在不实现。
-func (m *Manager) recoverLastData() error {
-	// 注意持久化的队列数据是无需恢复的，只是channel的队列数据需要恢复， 但是恢复的条件是在程序退出时，所有数据需要落盘
+func truncate(s string) string {
+	if len(s) > maxReasonLen {
+		return s[:maxReasonLen]
+	}
+	return s
+}
 
-	return nil
+// retryDelay 第 retries+1 次重试的延迟：RetryDelay * RetryFactor^retries，上限 MaxRetryDelay
+func retryDelay(cfg *Config, retries int) time.Duration {
+	delay := float64(cfg.RetryDelay)
+	maxDelay := float64(cfg.MaxRetryDelay)
+	for i := 0; i < retries && delay < maxDelay; i++ {
+		delay *= cfg.RetryFactor
+	}
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+	return time.Duration(delay)
 }

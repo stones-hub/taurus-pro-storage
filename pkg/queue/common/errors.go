@@ -24,9 +24,12 @@ func NewRetryableError(err error) error {
 
 // IsRetryableError 判断是否是可重试的错误
 func IsRetryableError(err error) bool {
-	_, ok := err.(*RetryableError)
-	return ok
+	var target *RetryableError
+	return errors.As(err, &target)
 }
+
+// Unwrap 返回被包装的原始错误
+func (e *RetryableError) Unwrap() error { return e.err }
 
 // ErrorableError 表示可放入失败队列的错误
 type ErrorableError struct {
@@ -44,9 +47,12 @@ func NewErrorableError(err error) error {
 
 // IsErrorableError 判断是否是可放入失败队列的错误
 func IsErrorableError(err error) bool {
-	_, ok := err.(*ErrorableError)
-	return ok
+	var target *ErrorableError
+	return errors.As(err, &target)
 }
+
+// Unwrap 返回被包装的原始错误
+func (e *ErrorableError) Unwrap() error { return e.err }
 
 // PanicError 表示panic错误， 用于记录panic错误信息
 type PanicError struct {
@@ -218,6 +224,29 @@ var (
 	ErrManagerNotRunning = errors.New("队列管理器未运行")
 	// ErrManagerAlreadyRunning 队列管理器已运行错误
 	ErrManagerAlreadyRunning = errors.New("队列管理器已运行")
+
+	// ErrManagerClosed 管理器已停止；Manager 为单次生命周期，Stop 后不能再次 Start
+	ErrManagerClosed = errors.New("队列管理器已停止，不支持重新启动，请创建新的 Manager")
+	// ErrStopTimeout Stop 在期限内未能排空在途任务；未确认的任务保留租约，可在租约到期后被恢复
+	ErrStopTimeout = errors.New("停止队列管理器超时，仍有任务在执行")
+
+	// ================================ 可靠投递错误 ================================
+	// ErrLeaseLost 当前领取凭证已失效（租约过期并被接管、任务已被确认或转移）
+	ErrLeaseLost = errors.New("领取凭证已失效")
+	// ErrIDConflict 同一个任务ID已存在但内容不同
+	ErrIDConflict = errors.New("任务ID已存在且内容不同")
+	// ErrInvalidID 任务ID或队列名称不合法
+	ErrInvalidID = errors.New("标识不合法，仅允许 1-128 位字母数字及 . _ : -，且以字母数字开头")
+	// ErrFailedNotFound 失败留存中不存在该任务（不存在或不处于失败状态）
+	ErrFailedNotFound = errors.New("失败留存中不存在该任务")
+	// ErrNotSupported 当前引擎不支持该操作
+	ErrNotSupported = errors.New("当前引擎不支持该操作")
+	// ErrUnsupportedTopology Redis 部署拓扑或版本不被可靠队列支持
+	ErrUnsupportedTopology = errors.New("不支持的 Redis 拓扑或版本")
+	// ErrCorruptRecord Redis 中的任务记录损坏（状态/payload/计数字段不合法）；现场被原样保留，需人工修复
+	ErrCorruptRecord = errors.New("任务记录损坏")
+	// ErrEngineClosed 引擎已关闭
+	ErrEngineClosed = errors.New("队列引擎已关闭")
 
 	// ErrContextCanceled 上下文取消错误
 	ErrContextCanceled = errors.New("上下文取消")

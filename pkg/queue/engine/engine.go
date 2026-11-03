@@ -5,7 +5,9 @@ import (
 	"time"
 )
 
-// Engine 定义队列引擎接口
+// Engine 定义旧的队列引擎接口（破坏性 Pop，没有确认语义）。
+//
+// Deprecated: 它不提供可靠消费保证，Manager 已不再使用。可靠投递请使用 ReliableEngine。
 type Engine interface {
 	// PushBlocking 阻塞式推送，队列满时阻塞直到有空间或上下文取消
 	PushBlocking(ctx context.Context, name string, data []byte) error

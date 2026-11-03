@@ -178,14 +178,10 @@ func main() {
 		EngineType: engine.REDIS,
 
 		// 队列配置
-		QueueSize:  5000,                     // 更大的队列容量
-		Source:     "order_source_queue",     // 源队列名称
-		Failed:     "order_failed_queue",     // 失败队列名称
-		Processing: "order_processing_queue", // 处理中队列名称
-		Retry:      "order_retry_queue",      // 重试队列名称
+		QueueSize: 5000,                 // 更大的队列容量
+		Source:    "order_source_queue", // 源队列名称
 
 		// 并发配置（高并发场景）
-		ReaderCount: 3,  // 更多读取协程
 		WorkerCount: 12, // 更多工作协程
 
 		// 重试配置（更严格的重试策略）
@@ -193,20 +189,6 @@ func main() {
 		RetryDelay:    time.Second * 3, // 更长的初始重试延迟
 		MaxRetryDelay: time.Minute * 5, // 更长的最大重试延迟
 		RetryFactor:   1.8,             // 更温和的重试倍数
-
-		// 失败队列配置
-		EnableFailedQueue: true,            // 启用失败队列处理
-		FailedInterval:    time.Minute * 3, // 更长的失败队列处理间隔
-		FailedBatch:       100,             // 更大的批处理大小
-
-		// 重试队列配置
-		EnableRetryQueue: true,             // 启用重试队列处理
-		RetryInterval:    time.Second * 20, // 更长的重试队列检查间隔
-		RetryBatch:       50,               // 重试批处理大小
-
-		// 数据落盘配置
-		EnableFailedDataToFile: true,                      // 启用数据落盘
-		FailedDataFilePath:     "./logs/order_failed.log", // 订单失败数据落盘路径
 
 		// 超时配置
 		Timeout: time.Minute * 5, // 更长的操作超时时间
@@ -337,7 +319,6 @@ func main() {
 
 			log.Printf("=== 高级队列统计信息 ===")
 			log.Printf("队列状态: %v", stats["status"])
-			log.Printf("Reader数量: %v", stats["readers"])
 			log.Printf("Worker数量: %v", stats["workers"])
 			log.Printf("已处理订单: %v", processorStats["processed_count"])
 			log.Printf("失败订单: %v", processorStats["failed_count"])

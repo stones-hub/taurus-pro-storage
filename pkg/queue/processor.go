@@ -26,7 +26,7 @@ type DataItem struct {
 
 // GenerateID 生成唯一的ID
 func GenerateID() string {
-	bytes := make([]byte, 8)
+	bytes := make([]byte, 16)
 	rand.Read(bytes)
 	return hex.EncodeToString(bytes)
 }
@@ -99,8 +99,16 @@ func FromJSON(data []byte) (*DataItem, error) {
 
 // Processor 定义数据处理器接口
 type Processor interface {
-	// Process 处理数据
-	// 如果返回 RetryableError，则会进行重试
-	// 如果返回其他错误，则直接进入失败队列
+	// Process 处理数据。投递语义是至少一次，同一任务可能被重复投递（崩溃恢复、租约被接管等），
+	// 实现必须幂等。
+	//
+	//   - 返回 nil：任务成功，被确认并删除。
+	//   - 返回 common.RetryableError（可被 errors.As 识别）：在 MaxRetries 内按退避延迟重试，
+	//     耗尽后进入失败留存。
+	//   - panic：被捕获并按可重试错误处理，worker 继续服务。
+	//   - 返回其它错误：直接进入失败留存（不会被自动再次处理，可用 Manager.ListFailed/ReplayFailed 查询重放）。
+	//
+	// ctx 在 Manager 停止排空超时、或租约丢失（被其它实例接管）时被取消，长任务应响应取消；
+	// 不响应取消的 Processor 无法被强制终止，可能与接管它的实例重叠执行。
 	Process(ctx context.Context, data []byte) error
 }

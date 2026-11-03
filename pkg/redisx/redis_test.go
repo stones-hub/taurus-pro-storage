@@ -13,27 +13,42 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// testRedisAddrEnv 指定测试使用的隔离 Redis 地址。未设置时依赖 Redis 的测试会被跳过，
+// 绝不回落到默认的 localhost:6379（可能是真实服务），参见 scripts/reliability-integration.sh。
+const testRedisAddrEnv = "TAURUS_TEST_REDIS_ADDR"
+
+// testLogDir 由 TestMain 创建并在结束时删除的临时日志目录
+var testLogDir string
+
+func testRedisAddr() string { return os.Getenv(testRedisAddrEnv) }
+
 // 测试主函数，用于初始化Redis客户端和清理测试文件
 func TestMain(m *testing.M) {
-	// 清理测试日志文件
-	os.Remove("./testdata/redis_test.log")
-	os.Remove("./testdata/redis_json_test.log")
-	os.Remove("./testdata/redis_simple_test.log")
-	os.MkdirAll("./testdata", 0755)
-
-	// 初始化 Redis 客户端（用于基础测试）
-	err := InitRedis(
-		WithAddrs("localhost:6379"),
-		WithPassword(""),
-		WithDB(0),
-		WithPoolSize(10),
-		WithMinIdleConns(5),
-		WithTimeout(time.Second, time.Second, time.Second),
-		WithMaxRetries(3),
-	)
+	// 测试日志写入临时目录，避免改写已跟踪的 testdata 文件
+	dir, err := os.MkdirTemp("", "redisx-test-logs-")
 	if err != nil {
-		fmt.Printf("跳过基础测试：Redis连接失败: %v\n", err)
-		// 即使Redis连接失败，也继续运行测试（带日志的测试会单独初始化）
+		fmt.Printf("创建临时日志目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	testLogDir = dir
+
+	// 初始化 Redis 客户端（用于基础测试），仅连接显式指定的隔离地址
+	if addr := testRedisAddr(); addr != "" {
+		err = InitRedis(
+			WithAddrs(addr),
+			WithPassword(""),
+			WithDB(0),
+			WithPoolSize(10),
+			WithMinIdleConns(5),
+			WithTimeout(time.Second, time.Second, time.Second),
+			WithMaxRetries(3),
+		)
+		if err != nil {
+			fmt.Printf("Redis连接失败(%s): %v\n", addr, err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Printf("未设置 %s，依赖 Redis 的测试将被跳过\n", testRedisAddrEnv)
 	}
 
 	// 运行测试
@@ -43,6 +58,7 @@ func TestMain(m *testing.M) {
 	if Redis != nil {
 		Redis.Close()
 	}
+	os.RemoveAll(testLogDir)
 
 	os.Exit(code)
 }

@@ -14,7 +14,9 @@ import (
 
 const redisBlockingPopPollInterval = time.Second * 2
 
-// RedisEngine Redis队列引擎实现
+// RedisEngine 基于 List 的 Redis 队列引擎实现（破坏性 Pop，弹出后进程崩溃会丢消息）。
+//
+// Deprecated: 请使用 RedisStreamEngine。
 type RedisEngine struct {
 	client *redisx.RedisClient
 }
@@ -28,11 +30,10 @@ func NewRedisEngine(client *redisx.RedisClient) Engine {
 
 // pushData 推送数据到队列的核心实现
 // 由于 Redis 的 LPUSH 永远不会阻塞，所以 PushBlocking 和 PushNonBlocking 使用相同实现
-func (e *RedisEngine) pushData(ctx context.Context, queue string, data []byte) error {
+func (e *RedisEngine) pushData(ctx context.Context, queue string, data []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 	return e.client.GetClient().LPush(ctx, queue, data).Err()
@@ -50,11 +51,10 @@ func (e *RedisEngine) PushNonBlocking(ctx context.Context, queue string, data []
 }
 
 // PopBlocking 阻塞式读取，有数据立即返回，无数据时阻塞直到有数据或上下文取消
-func (e *RedisEngine) PopBlocking(ctx context.Context, queue string) ([]byte, error) {
+func (e *RedisEngine) PopBlocking(ctx context.Context, queue string) (data []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -87,11 +87,10 @@ func (e *RedisEngine) PopBlocking(ctx context.Context, queue string) ([]byte, er
 }
 
 // PopNonBlocking 非阻塞读取，立即返回，无数据时返回特定错误
-func (e *RedisEngine) PopNonBlocking(ctx context.Context, queue string) ([]byte, error) {
+func (e *RedisEngine) PopNonBlocking(ctx context.Context, queue string) (data []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -108,15 +107,13 @@ func (e *RedisEngine) PopNonBlocking(ctx context.Context, queue string) ([]byte,
 }
 
 // BatchPopBlocking 批量阻塞式读取
-func (e *RedisEngine) BatchPopBlocking(ctx context.Context, queue string, count int) ([][]byte, error) {
+func (e *RedisEngine) BatchPopBlocking(ctx context.Context, queue string, count int) (result [][]byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
-	var result [][]byte
 	for i := 0; i < count; i++ {
 		data, err := e.PopBlocking(ctx, queue)
 		if err != nil {
@@ -128,15 +125,13 @@ func (e *RedisEngine) BatchPopBlocking(ctx context.Context, queue string, count 
 }
 
 // BatchPopNonBlocking 批量非阻塞读取
-func (e *RedisEngine) BatchPopNonBlocking(ctx context.Context, queue string, count int) ([][]byte, error) {
+func (e *RedisEngine) BatchPopNonBlocking(ctx context.Context, queue string, count int) (result [][]byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
-	var result [][]byte
 	for i := 0; i < count; i++ {
 		data, err := e.PopNonBlocking(ctx, queue)
 		if err != nil {
@@ -157,11 +152,10 @@ func (e *RedisEngine) BatchPopNonBlocking(ctx context.Context, queue string, cou
 //   - queue: 队列名称，会自动添加"_delayed"后缀
 //   - data: 要存储的消息数据
 //   - delay: 延迟时间，消息将在当前时间+delay后到期
-func (e *RedisEngine) PushDelayed(ctx context.Context, queue string, data []byte, delay time.Duration) error {
+func (e *RedisEngine) PushDelayed(ctx context.Context, queue string, data []byte, delay time.Duration) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -188,11 +182,10 @@ func (e *RedisEngine) PushDelayed(ctx context.Context, queue string, data []byte
 //   - ctx: 上下文，用于控制超时和取消
 //   - queue: 队列名称，会自动添加"_delayed"后缀
 //   - count: 最多返回的消息数量，用于分页控制
-func (e *RedisEngine) PopDelayed(ctx context.Context, queue string, count int) ([][]byte, error) {
+func (e *RedisEngine) PopDelayed(ctx context.Context, queue string, count int) (result [][]byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 

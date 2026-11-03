@@ -125,14 +125,10 @@ func main() {
 		EngineType: engine.CHANNEL,
 
 		// 队列配置
-		QueueSize:  2000,                    // 队列大小
-		Source:     "user_source_queue",     // 源队列名称
-		Failed:     "user_failed_queue",     // 失败队列名称
-		Processing: "user_processing_queue", // 处理中队列名称
-		Retry:      "user_retry_queue",      // 重试队列名称
+		QueueSize: 2000,                // 队列大小
+		Source:    "user_source_queue", // 队列名称（必填）
 
 		// 并发配置
-		ReaderCount: 2, // 读取协程数量
 		WorkerCount: 8, // 工作协程数量
 
 		// 重试配置
@@ -140,20 +136,6 @@ func main() {
 		RetryDelay:    time.Second * 2, // 初始重试延迟
 		MaxRetryDelay: time.Minute * 2, // 最大重试延迟
 		RetryFactor:   2.0,             // 重试延迟倍数（指数退避）
-
-		// 失败队列配置
-		EnableFailedQueue: true,            // 启用失败队列处理
-		FailedInterval:    time.Minute * 2, // 失败队列处理间隔
-		FailedBatch:       50,              // 每次处理的最大数量
-
-		// 重试队列配置
-		EnableRetryQueue: true,             // 启用重试队列处理
-		RetryInterval:    time.Second * 15, // 重试队列检查间隔
-		RetryBatch:       30,               // 每次处理的重试数据数量
-
-		// 数据落盘配置
-		EnableFailedDataToFile: true,                     // 启用数据落盘
-		FailedDataFilePath:     "./logs/failed_data.log", // 数据落盘路径
 
 		// 超时配置
 		Timeout: time.Minute * 3, // 操作超时时间
@@ -243,7 +225,6 @@ func main() {
 
 			log.Printf("=== 队列统计信息 ===")
 			log.Printf("队列状态: %v", stats["status"])
-			log.Printf("Reader数量: %v", stats["readers"])
 			log.Printf("Worker数量: %v", stats["workers"])
 			log.Printf("已处理数据: %v", processorStats["processed_count"])
 			log.Printf("失败数据: %v", processorStats["failed_count"])

@@ -20,14 +20,10 @@ func createBasicConfig() *queue.Config {
 		EngineType: engine.CHANNEL,
 
 		// 基础队列配置
-		QueueSize:  1000,
-		Source:     "basic_source",
-		Failed:     "basic_failed",
-		Processing: "basic_processing",
-		Retry:      "basic_retry",
+		QueueSize: 1000,
+		Source:    "basic_source",
 
 		// 基础并发配置
-		ReaderCount: 1,
 		WorkerCount: 3,
 
 		// 基础重试配置
@@ -35,20 +31,6 @@ func createBasicConfig() *queue.Config {
 		RetryDelay:    time.Second,
 		MaxRetryDelay: time.Minute,
 		RetryFactor:   2.0,
-
-		// 基础失败队列配置
-		EnableFailedQueue: true,
-		FailedInterval:    time.Minute * 5,
-		FailedBatch:       50,
-
-		// 基础重试队列配置
-		EnableRetryQueue: true,
-		RetryInterval:    time.Second * 10,
-		RetryBatch:       25,
-
-		// 基础数据落盘配置
-		EnableFailedDataToFile: true,
-		FailedDataFilePath:     "./logs/basic_failed.log",
 
 		// 基础超时配置
 		Timeout: time.Minute * 2,
@@ -62,14 +44,10 @@ func createHighConcurrencyConfig() *queue.Config {
 		EngineType: engine.REDIS,
 
 		// 高并发队列配置
-		QueueSize:  10000,
-		Source:     "high_concurrency_source",
-		Failed:     "high_concurrency_failed",
-		Processing: "high_concurrency_processing",
-		Retry:      "high_concurrency_retry",
+		QueueSize: 10000,
+		Source:    "high_concurrency_source",
 
 		// 高并发配置
-		ReaderCount: 5,  // 更多读取协程
 		WorkerCount: 20, // 更多工作协程
 
 		// 高并发重试配置
@@ -77,20 +55,6 @@ func createHighConcurrencyConfig() *queue.Config {
 		RetryDelay:    time.Second * 2,
 		MaxRetryDelay: time.Minute * 3,
 		RetryFactor:   1.8,
-
-		// 高并发失败队列配置
-		EnableFailedQueue: true,
-		FailedInterval:    time.Minute * 2,
-		FailedBatch:       200, // 更大的批处理
-
-		// 高并发重试队列配置
-		EnableRetryQueue: true,
-		RetryInterval:    time.Second * 15,
-		RetryBatch:       100, // 更大的批处理
-
-		// 高并发数据落盘配置
-		EnableFailedDataToFile: true,
-		FailedDataFilePath:     "./logs/high_concurrency_failed.log",
 
 		// 高并发超时配置
 		Timeout: time.Minute * 5,
@@ -104,14 +68,10 @@ func createLowLatencyConfig() *queue.Config {
 		EngineType: engine.CHANNEL,
 
 		// 低延迟队列配置
-		QueueSize:  5000,
-		Source:     "low_latency_source",
-		Failed:     "low_latency_failed",
-		Processing: "low_latency_processing",
-		Retry:      "low_latency_retry",
+		QueueSize: 5000,
+		Source:    "low_latency_source",
 
 		// 低延迟并发配置
-		ReaderCount: 3,
 		WorkerCount: 15,
 
 		// 低延迟重试配置
@@ -119,20 +79,6 @@ func createLowLatencyConfig() *queue.Config {
 		RetryDelay:    time.Millisecond * 500, // 更短的重试延迟
 		MaxRetryDelay: time.Second * 30,       // 更短的最大重试延迟
 		RetryFactor:   2.5,                    // 更激进的重试倍数
-
-		// 低延迟失败队列配置
-		EnableFailedQueue: true,
-		FailedInterval:    time.Second * 30, // 更频繁的失败队列处理
-		FailedBatch:       20,               // 更小的批处理
-
-		// 低延迟重试队列配置
-		EnableRetryQueue: true,
-		RetryInterval:    time.Second * 5, // 更频繁的重试检查
-		RetryBatch:       10,              // 更小的批处理
-
-		// 低延迟数据落盘配置
-		EnableFailedDataToFile: true,
-		FailedDataFilePath:     "./logs/low_latency_failed.log",
 
 		// 低延迟超时配置
 		Timeout: time.Second * 30, // 更短的超时时间
@@ -146,14 +92,10 @@ func createHighReliabilityConfig() *queue.Config {
 		EngineType: engine.REDIS,
 
 		// 高可靠性队列配置
-		QueueSize:  20000,
-		Source:     "high_reliability_source",
-		Failed:     "high_reliability_failed",
-		Processing: "high_reliability_processing",
-		Retry:      "high_reliability_retry",
+		QueueSize: 20000,
+		Source:    "high_reliability_source",
 
 		// 高可靠性并发配置
-		ReaderCount: 8,
 		WorkerCount: 30,
 
 		// 高可靠性重试配置
@@ -161,20 +103,6 @@ func createHighReliabilityConfig() *queue.Config {
 		RetryDelay:    time.Second * 5,  // 更长的初始重试延迟
 		MaxRetryDelay: time.Minute * 10, // 更长的最大重试延迟
 		RetryFactor:   1.5,              // 更温和的重试倍数
-
-		// 高可靠性失败队列配置
-		EnableFailedQueue: true,
-		FailedInterval:    time.Minute * 10, // 更长的失败队列处理间隔
-		FailedBatch:       500,              // 更大的批处理
-
-		// 高可靠性重试队列配置
-		EnableRetryQueue: true,
-		RetryInterval:    time.Minute * 2, // 更长的重试检查间隔
-		RetryBatch:       200,             // 更大的批处理
-
-		// 高可靠性数据落盘配置
-		EnableFailedDataToFile: true,
-		FailedDataFilePath:     "./logs/high_reliability_failed.log",
 
 		// 高可靠性超时配置
 		Timeout: time.Minute * 10, // 更长的超时时间

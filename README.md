@@ -6,7 +6,10 @@
 
 **Taurus Pro Storage** 是一个功能强大的 Go 语言存储解决方案库，提供了数据库连接管理、Redis 客户端、消息队列等核心功能。该库设计简洁、性能优异，支持多种数据库类型和队列引擎，是企业级应用的理想选择。
 
-> **最新更新**: 优化了异步队列处理机制，提升了消息处理的稳定性和性能。
+> **升级提示（破坏性变更，尚未发布）**：消息队列改为 Redis Stream 可靠消费（至少一次），删除了旧的
+> Reader/Worker 等导出符号，键命名空间与旧版不兼容、旧数据不迁移，失败任务默认留存不再自动重试。
+> 升级前请阅读 [CHANGELOG.md](CHANGELOG.md) 与 [docs/queue-reliability.md](docs/queue-reliability.md)；
+> 验收范围与未验证项见 [docs/release-readiness.md](docs/release-readiness.md)。
 
 ## ✨ 主要特性
 
@@ -26,11 +29,12 @@
 - **结构化日志**: 支持 JSON 和简单格式的日志记录
 
 ### 📨 消息队列
-- **多引擎支持**: Redis 引擎和内存通道引擎
-- **高可靠性**: 支持失败重试、死信队列、处理状态跟踪
-- **并发处理**: 可配置的读取器和工作者数量
-- **监控统计**: 实时队列状态和处理统计
-- **优雅关闭**: 支持优雅停止和资源清理
+- **多引擎支持**: Redis Stream 引擎（至少一次投递，进程崩溃后可恢复）和内存引擎（易失，进程退出即丢）
+- **可靠投递**: 领取租约 + 自动续租、接管后旧凭证失效、延迟重试、失败默认留存并可查询/显式重放
+- **稳定ID入队**: `AddDataWithID` 支持超时后安全重试与去重
+- **并发处理**: 可配置的工作者数量，多进程/多实例共享同一队列
+- **优雅关闭**: 停止领取、限时排空，超时如实返回错误；Manager 为单次生命周期
+- **适用范围**: 可靠队列只支持单机/主从直连 Redis（拒绝 Cluster，拒绝 6.2 以下），实际只在 Redis 8.10.2 上验证；Processor 必须幂等
 
 ### 📝 日志系统
 - **多格式支持**: JSON、简单文本格式
@@ -402,49 +406,70 @@ package main
 
 import (
     "context"
-    "github.com/stones-hub/taurus-pro-storage/pkg/queue"
-    "github.com/stones-hub/taurus-pro-storage/pkg/queue/engine"
+    "errors"
     "time"
+
+    "github.com/stones-hub/taurus-pro-storage/pkg/queue"
+    "github.com/stones-hub/taurus-pro-storage/pkg/queue/common"
+    "github.com/stones-hub/taurus-pro-storage/pkg/queue/engine"
+    "github.com/stones-hub/taurus-pro-storage/pkg/redisx"
 )
 
-// 自定义处理器
+// Processor 必须幂等：至少一次投递意味着同一任务可能重复到达。
 type MyProcessor struct{}
 
 func (p *MyProcessor) Process(ctx context.Context, data []byte) error {
-    // 处理消息逻辑
-    return nil
+    // 返回 nil：成功；
+    // 返回 common.NewRetryableError(err)：按退避重试，耗尽后失败留存；
+    // panic：被捕获并按可重试错误处理；
+    // 其它错误：直接失败留存（不会自动再次处理）。
+    // ctx 在停止超时或租约丢失时被取消，长任务应响应取消。
+    if len(data) == 0 {
+        return errors.New("empty")
+    }
+    return common.NewRetryableError(errors.New("downstream busy"))
 }
 
 func main() {
-    // 队列配置
-    config := &queue.Config{
-        EngineType:    engine.TypeRedis,
-        Source:        "my_queue",
-        Failed:        "my_failed",
-        Processing:    "my_processing",
-        Retry:         "my_retry",
-        ReaderCount:   2,
-        WorkerCount:   4,
-        WorkerTimeout: time.Second * 30,
-        MaxRetries:    3,
-        RetryDelay:    time.Second * 5,
-    }
-
-    // 创建队列管理器
-    manager, err := queue.NewManager(&MyProcessor{}, config)
-    if err != nil {
+    if err := redisx.InitRedis(redisx.WithAddrs("127.0.0.1:6379")); err != nil {
         panic(err)
     }
 
-    // 启动队列
+    manager, err := queue.NewManager(&MyProcessor{}, &queue.Config{
+        EngineType:    engine.REDIS,
+        Source:        "my_queue", // 必填；1-128 位字母数字及 . _ : -
+        WorkerCount:   4,
+        MaxRetries:    3, // 0 表示不重试
+        RetryDelay:    5 * time.Second,
+        LeaseDuration: 30 * time.Second,
+    })
+    if err != nil {
+        panic(err)
+    }
     if err := manager.Start(); err != nil {
         panic(err)
     }
 
-    // 优雅关闭
-    defer manager.Stop()
+    ctx := context.Background()
+    // AddData 返回 nil 仅表示 Redis 已接收，不表示业务完成；超时/断连时结果不确定，
+    // 重试会产生新任务。需要安全重试请使用稳定ID：
+    _ = manager.AddData(ctx, []byte("payload"))
+    _ = manager.AddDataWithID(ctx, "order-1001", []byte("payload"))
+
+    // 失败任务默认留存，不会自动再处理：
+    failed, _ := manager.ListFailed(ctx, 100) // 最早失败的至多 100 条（1..1000）
+    for _, f := range failed {
+        _ = manager.ReplayFailed(ctx, f.ID) // 同一ID转回就绪队列，重试预算重置
+    }
+
+    // 优雅关闭：停止领取，限时排空；超时返回 common.ErrStopTimeout。Stop 之后不能再次 Start。
+    if err := manager.Stop(ctx); err != nil {
+        panic(err)
+    }
 }
 ```
+
+完整的外部调用示例见 `examples/reliable_queue_example`，运行语义、Redis 要求、迁移与回滚见 [docs/queue-reliability.md](docs/queue-reliability.md)。
 
 ## 📚 详细文档
 
@@ -524,8 +549,15 @@ func (r *UserRepository) FindActiveUsers(ctx context.Context) ([]User, error) {
 | `MaxOpenConns` | int | 25 | 最大打开连接数 |
 | `MaxIdleConns` | int | 25 | 最大空闲连接数 |
 | `ConnMaxLifetime` | time.Duration | 5分钟 | 连接最大生命周期 |
-| `MaxRetries` | int | 3 | 连接重试次数 |
-| `RetryDelay` | int | 1 | 重试延迟（秒） |
+| `MaxRetries` | int | 3 | 连接尝试次数，**必须 > 0**，否则 `InitDB` 返回错误 |
+| `RetryDelay` | int | 1 | 重试延迟（秒），不能为负 |
+
+行为说明：
+- 连接注册表并发安全；`DbList()` 返回快照，修改它不会影响内部状态；`GetDB` 找不到连接时错误可用 `errors.Is(err, db.ErrConnectionNotFound)` 判断。
+- `FindByID` / `FindOneByCondition` 未找到记录时保留 `gorm.ErrRecordNotFound` 错误链，可用 `errors.Is(err, gorm.ErrRecordNotFound)`。
+- `FindWithPagination` 的 `orderBy` 只接受实体模型中存在的字段名/列名（白名单），其它值返回错误；`page`、`pageSize` 必须 ≥ 1。`PaginateQuery` 的表名只接受标识符（可带 `schema.` 前缀）。
+- 零值语义保持不变并有测试覆盖：`Save` / `db.Update` 写入全部字段（含零值）；`Repository.Update` 使用 GORM `Updates`，**忽略结构体中的零值字段**；需要写零值请用 `Save` 或 `UpdateByCondition` 传 map。
+- 数据库封装语义仅用 SQLite 驱动验证，未覆盖 MySQL / Postgres / ClickHouse。
 
 ### Redis 配置选项
 
@@ -545,16 +577,22 @@ func (r *UserRepository) FindActiveUsers(ctx context.Context) ([]User, error) {
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `EngineType` | string | - | 队列引擎类型 (redis, channel) |
-| `Source` | string | - | 源队列名称 |
-| `Failed` | string | - | 失败队列名称 |
-| `Processing` | string | - | 处理中队列名称 |
-| `Retry` | string | - | 重试队列名称 |
-| `ReaderCount` | int | - | 读取器数量 |
-| `WorkerCount` | int | - | 工作者数量 |
-| `WorkerTimeout` | time.Duration | - | 工作者超时时间 |
-| `MaxRetries` | int | 0 | 最大重试次数 |
-| `RetryDelay` | time.Duration | - | 重试延迟时间 |
+| `EngineType` | string | redis | `redis`（Stream，持久）或 `channel`（进程内，易失） |
+| `Source` | string | - | **必填**，队列名称；同名队列的多个实例共享任务 |
+| `RedisClient` | *redisx.RedisClient | `redisx.Redis` | 使用的 Redis 客户端 |
+| `WorkerCount` | int | 5 | 工作协程数 |
+| `MaxRetries` | int | 0（`DefaultConfig()` 为 3） | 最大重试次数；**0 表示不重试**，不会被默认值覆盖 |
+| `RetryDelay` / `MaxRetryDelay` / `RetryFactor` | | 1s / 1m / 2 | 第 n 次重试延迟 = RetryDelay × RetryFactor^(n-1)，封顶 MaxRetryDelay |
+| `LeaseDuration` | time.Duration | 30s | 领取租约；自动每 1/3 租期续租，崩溃后到期被恢复，须 ≥ 500ms |
+| `DedupWindow` | time.Duration | 24h | `AddDataWithID` 任务完成后的去重保留时长（未完成任务不受限） |
+| `FailedRetention` | time.Duration | 0 | 失败留存保留时长；0 表示永久保留直到重放 |
+| `PollInterval` | time.Duration | 200ms | 无任务时的轮询间隔 |
+| `Timeout` | time.Duration | 5m | `Stop` 排空在途任务的最长等待 |
+| `QueueSize` | int | 1000 | 仅 `channel` 引擎：未清理任务（含失败留存）上限 |
+
+`MergeWithDefaults`/`NewManager` 只为“0 没有意义”的字段补默认值，不会改写 `MaxRetries` 和任何 bool 字段；传入的 `Config` 不会被修改。
+
+**已废弃字段**（设置后不会生效，`NewManager` 会在日志中提示）：`ReaderCount`、`Processing`、`Retry`、`Failed`、`EnableFailedQueue`、`EnableRetryQueue`、`FailedInterval`、`FailedBatch`、`RetryInterval`、`RetryBatch`、`EnableFailedDataToFile`、`FailedDataFilePath`。可靠路径不再有 Reader / Processing 队列，失败任务始终留存并可通过 `ListFailed`/`ReplayFailed` 处理，不再自动重新调用 Processor，也不再写 `/tmp` 文本文件。
 
 ### 日志系统配置
 
@@ -631,12 +669,16 @@ database:
 
 queue:
   engine_type: "redis"
-  reader_count: 2
+  source: "my_queue"      # 必填
   worker_count: 4
-  worker_timeout: "30s"
-  max_retries: 3
+  max_retries: 3          # 0 表示不重试
   retry_delay: "5s"
+  lease_duration: "30s"
+  dedup_window: "24h"
+  failed_retention: "0s"  # 0 表示永久留存，需监控
 ```
+
+（以上 YAML 只是示意，库本身不读取配置文件；字段对应 `queue.Config`。）
 
 ## 📊 性能特性
 
@@ -652,8 +694,22 @@ queue:
 运行测试套件：
 
 ```bash
-# 运行所有测试
+# 运行所有测试（依赖 Redis 的测试在未设置 TAURUS_TEST_REDIS_ADDR 时会被跳过，不会连接 localhost:6379）
 go test ./...
+
+# 竞态检测
+go test -race ./...
+
+# 隔离的 Redis 集成与故障验收（固定镜像、随机端口、结束自动清理），详见 docs/queue-reliability.md
+scripts/reliability-integration.sh
+
+# 独立安装验收门禁：打包候选 → 本地 file module proxy → 只用公开 API 的独立调用模块；
+# 私有 Redis 8.10.2 容器（1CPU/384MiB），逐ID账本对账、公开 API 契约、故障与负例。失败非零退出。
+bash scripts/strict-readiness.sh --sustained
+# 可选：附加 30 分钟有界长稳态（≤10 条/秒、≤18000 条、连续采样与安全阈值）
+bash scripts/strict-readiness.sh --sustained --soak
+# 参数负例自测
+bash scripts/test-strict-readiness-args.sh
 
 # 运行特定包的测试
 go test ./pkg/db
@@ -673,13 +729,13 @@ go test -bench=. ./...
 taurus-pro-storage/
 ├── bin/                    # 可执行文件
 │   └── main.go           # 主程序示例
-├── cmd/                   # 命令行工具
-│   └── queue_example/    # 队列示例
+├── scripts/               # 隔离集成验收脚本
 ├── docs/                  # 文档
 │   ├── db-logging.md     # 数据库日志文档
 │   └── redis-logging.md  # Redis日志文档
 ├── examples/              # 示例代码
-│   └── queue_comprehensive_test/  # 队列综合测试
+│   ├── queue_example/    # 队列配置/基础/高级示例
+│   └── reliable_queue_example/  # 可靠队列外部调用示例
 ├── pkg/                   # 核心包
 │   ├── db/               # 数据库管理
 │   │   ├── dao/          # 数据访问对象
@@ -690,9 +746,7 @@ taurus-pro-storage/
 │   │   ├── engine/       # 队列引擎
 │   │   ├── config.go     # 队列配置
 │   │   ├── manager.go    # 队列管理器
-│   │   ├── processor.go  # 消息处理器
-│   │   ├── worker.go     # 工作者
-│   │   └── reader.go     # 读取器
+│   │   └── processor.go  # 消息处理器
 │   └── redisx/           # Redis 扩展
 │       ├── redis.go      # Redis 客户端
 │       └── logger.go     # Redis 日志

@@ -19,8 +19,11 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"regexp"
+	"sync"
 	"time"
 
 	"gorm.io/driver/clickhouse"
@@ -31,8 +34,14 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// DBConnections stores multiple database connections
-var dbConnections = make(map[string]*gorm.DB)
+// dbConnections 保存已注册的数据库连接，所有访问必须持有 dbMu。
+var (
+	dbMu          sync.RWMutex
+	dbConnections = make(map[string]*gorm.DB)
+)
+
+// identPattern 表名/列名：标识符，可带一层 schema 前缀（schema.table）
+var identPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
 
 // Options 数据库配置选项
 type Options struct {
@@ -42,7 +51,7 @@ type Options struct {
 	MaxOpenConns    int              // 最大打开连接数，默认 25
 	MaxIdleConns    int              // 最大空闲连接数，默认 25
 	ConnMaxLifetime time.Duration    // 连接最大生命周期，默认 5 分钟
-	MaxRetries      int              // 连接重试次数，默认 3
+	MaxRetries      int              // 连接尝试次数（必须 > 0），默认 3
 	RetryDelay      int              // 重试延迟（秒），默认 1
 	Logger          logger.Interface // GORM日志记录器，如果为nil则使用默认
 }
@@ -143,9 +152,23 @@ func InitDB(opts ...Option) error {
 	if options.DSN == "" {
 		return fmt.Errorf("database DSN cannot be empty")
 	}
+	if options.MaxRetries <= 0 {
+		return fmt.Errorf("max retries (connection attempts) must be positive, got %d", options.MaxRetries)
+	}
+	if options.RetryDelay < 0 {
+		return fmt.Errorf("retry delay cannot be negative, got %d", options.RetryDelay)
+	}
+	switch options.DBType {
+	case "postgres", "mysql", "sqlite", "clickhouse":
+	default:
+		return fmt.Errorf("unsupported database type: %s", options.DBType)
+	}
 
-	// 检查连接是否已存在
-	if _, ok := dbConnections[options.DBName]; ok {
+	// 快速检查连接是否已存在（连接建立期间不持锁；注册时会再次检查）
+	dbMu.RLock()
+	_, exists := dbConnections[options.DBName]
+	dbMu.RUnlock()
+	if exists {
 		return fmt.Errorf("database connection '%s' already exists", options.DBName)
 	}
 
@@ -173,17 +196,17 @@ func InitDB(opts ...Option) error {
 			db, err = gorm.Open(sqlite.Open(options.DSN), &gorm.Config{Logger: options.Logger})
 		case "clickhouse":
 			db, err = gorm.Open(clickhouse.Open(options.DSN), &gorm.Config{Logger: options.Logger})
-		default:
-			return fmt.Errorf("unsupported database type: %s", options.DBType)
 		}
 
 		if err == nil {
 			break
 		}
 
-		// 重试连接
-		log.Printf("Failed to connect to database: %v. Retrying in %d seconds...", err, options.RetryDelay)
-		time.Sleep(time.Duration(options.RetryDelay) * time.Second)
+		// 重试连接（最后一次失败后不再等待）
+		if i < options.MaxRetries-1 {
+			log.Printf("Failed to connect to database: %v. Retrying in %d seconds...", err, options.RetryDelay)
+			time.Sleep(time.Duration(options.RetryDelay) * time.Second)
+		}
 	}
 
 	if err != nil {
@@ -200,24 +223,42 @@ func InitDB(opts ...Option) error {
 	sqlDB.SetMaxIdleConns(options.MaxIdleConns)
 	sqlDB.SetConnMaxLifetime(options.ConnMaxLifetime)
 
-	// 存储连接
+	// 存储连接（并发初始化同名连接时只有一个成功）
+	dbMu.Lock()
+	if _, ok := dbConnections[options.DBName]; ok {
+		dbMu.Unlock()
+		sqlDB.Close()
+		return fmt.Errorf("database connection '%s' already exists", options.DBName)
+	}
 	dbConnections[options.DBName] = db
+	dbMu.Unlock()
 	log.Printf("Database connection '%s' established", options.DBName)
 	return nil
 }
 
+// ErrConnectionNotFound 未找到指定名称的数据库连接，可用 errors.Is 判断
+var ErrConnectionNotFound = errors.New("database connection not found")
+
 // GetDB 获取数据库连接
 func GetDB(dbName string) (*gorm.DB, error) {
+	dbMu.RLock()
 	db, exists := dbConnections[dbName]
+	dbMu.RUnlock()
 	if !exists {
-		return nil, fmt.Errorf("database connection '%s' not found", dbName)
+		return nil, fmt.Errorf("database connection '%s' not found: %w", dbName, ErrConnectionNotFound)
 	}
 	return db, nil
 }
 
-// DbList 获取所有数据库连接
+// DbList 返回当前所有数据库连接的快照；修改返回的 map 不影响内部注册表。
 func DbList() map[string]*gorm.DB {
-	return dbConnections
+	dbMu.RLock()
+	defer dbMu.RUnlock()
+	snapshot := make(map[string]*gorm.DB, len(dbConnections))
+	for k, v := range dbConnections {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 // Create inserts a new record into the specified database
@@ -229,7 +270,8 @@ func Create(dbName string, value interface{}) error {
 	return db.Create(value).Error
 }
 
-// Update modifies an existing record in the specified database
+// Update modifies an existing record in the specified database.
+// 使用 gorm Save 语义：写入结构体的全部字段（含零值），无主键时会插入新记录。
 func Update(dbName string, value interface{}) error {
 	db, err := GetDB(dbName)
 	if err != nil {
@@ -303,6 +345,12 @@ func ExecuteInTransaction(dbName string, txFunc func(tx *gorm.DB) error) error {
 
 // PaginateQuery performs a paginated query on the specified table
 func PaginateQuery(dbName, tableName string, pageSize int, processFunc func(records []map[string]interface{}) error, conds ...interface{}) error {
+	if !identPattern.MatchString(tableName) {
+		return fmt.Errorf("invalid table name %q", tableName)
+	}
+	if pageSize <= 0 {
+		return fmt.Errorf("page size must be positive, got %d", pageSize)
+	}
 	db, err := GetDB(dbName)
 	if err != nil {
 		return err
@@ -362,6 +410,9 @@ func PaginateQuery(dbName, tableName string, pageSize int, processFunc func(reco
 
 // Paginate retrieves records from the specified database based on conditions and supports pagination
 func Paginate(dbName string, out interface{}, page, pageSize int, where ...interface{}) error {
+	if page < 1 || pageSize < 1 {
+		return fmt.Errorf("page and page size must be >= 1, got page=%d pageSize=%d", page, pageSize)
+	}
 	db, err := GetDB(dbName)
 	if err != nil {
 		return err
@@ -372,14 +423,22 @@ func Paginate(dbName string, out interface{}, page, pageSize int, where ...inter
 
 // CloseDB closes all database connections
 func CloseDB() {
-	for dbName, db := range dbConnections {
+	// 先把注册表摘下来再关闭，避免持锁做 IO，也保证并发 InitDB/GetDB 看到一致状态
+	dbMu.Lock()
+	closing := dbConnections
+	dbConnections = make(map[string]*gorm.DB)
+	dbMu.Unlock()
+
+	for dbName, db := range closing {
 		sqlDB, err := db.DB()
 		if err != nil {
 			log.Printf("Failed to get database from GORM: %v", err)
 			continue
 		}
-		sqlDB.Close()
-		delete(dbConnections, dbName)
+		if err := sqlDB.Close(); err != nil {
+			log.Printf("Failed to close database connection '%s': %v", dbName, err)
+			continue
+		}
 		log.Printf("Database connection '%s' closed successfully", dbName)
 	}
 }

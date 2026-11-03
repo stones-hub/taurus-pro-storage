@@ -430,7 +430,11 @@ func (r *RedisClient) Close() error {
 	return r.client.Close()
 }
 
-// Lock 尝试获取一个分布式锁, 如果是同一个进程获取同一个锁，会自动续期
+// Lock 尝试获取一个分布式锁, 如果是同一个进程获取同一个锁，会自动续期。
+//
+// 限制：这是基于单个 Redis 实例的租约锁，不是强一致的 fencing 锁。锁到期（业务超时、GC 暂停、
+// 网络分区）后其它持有者可以获取同一把锁，原持有者可能仍在执行；主从异步复制下发生故障切换时
+// 锁也可能丢失。不要用它保护必须严格互斥的资源，需要时请在被保护资源侧使用 fencing token / 乐观锁。
 func (r *RedisClient) Lock(ctx context.Context, lockKey string, lockValue string, lockExpireTime time.Duration) (bool, error) {
 	// 参数验证
 	if lockKey == "" {

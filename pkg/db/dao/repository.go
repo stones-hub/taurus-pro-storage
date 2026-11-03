@@ -22,8 +22,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
 /*
@@ -243,7 +246,7 @@ func (r *BaseRepository[T]) Create(ctx context.Context, entity *T) error {
 	return r.db.WithContext(ctx).Create(entity).Error
 }
 
-// Save 保存记录（创建或更新）
+// Save 保存记录（创建或更新）。Save 写入结构体的全部字段（含零值）；主键为零值时执行插入。
 // 参数说明:
 //   - ctx: 上下文，用于超时控制和取消
 //   - entity: 要保存的实体指针，不能为nil
@@ -260,7 +263,8 @@ func (r *BaseRepository[T]) Save(ctx context.Context, entity *T) error {
 	return r.db.WithContext(ctx).Save(entity).Error
 }
 
-// Update 更新记录
+// Update 更新记录。使用 gorm Updates 语义：结构体中的零值字段（0、""、false）不会被写入；
+// 需要把字段更新为零值时请使用 UpdateByCondition 传 map，或使用 Save。
 func (r *BaseRepository[T]) Update(ctx context.Context, entity *T) error {
 	if entity == nil {
 		return errors.New("entity cannot be nil")
@@ -305,7 +309,7 @@ func (r *BaseRepository[T]) FindByID(ctx context.Context, id uint) (*T, error) {
 	err := r.db.WithContext(ctx).First(&entity, id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("record not found with id: %d", id)
+			return nil, fmt.Errorf("record not found with id: %d: %w", id, err)
 		}
 		return nil, err
 	}
@@ -348,7 +352,7 @@ func (r *BaseRepository[T]) FindOneByCondition(ctx context.Context, condition in
 	err := r.db.WithContext(ctx).Where(condition, args...).First(&entity).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("record not found with condition: %v", condition)
+			return nil, fmt.Errorf("record not found with condition: %v: %w", condition, err)
 		}
 		return nil, err
 	}
@@ -387,6 +391,10 @@ func (r *BaseRepository[T]) FindWithPagination(ctx context.Context, page, pageSi
 	var entities []T
 	var total int64
 
+	if page < 1 || pageSize < 1 {
+		return nil, 0, fmt.Errorf("page and page size must be >= 1, got page=%d pageSize=%d", page, pageSize)
+	}
+
 	// 构建查询
 	query := r.db.WithContext(ctx).Model(new(T))
 
@@ -395,13 +403,13 @@ func (r *BaseRepository[T]) FindWithPagination(ctx context.Context, page, pageSi
 		query = query.Where(condition, args...)
 	}
 
-	// 添加排序
+	// 添加排序（orderBy 只允许实体模型中的字段名/列名）
 	if orderBy != "" {
-		if desc {
-			query = query.Order(orderBy + " DESC")
-		} else {
-			query = query.Order(orderBy + " ASC")
+		column, err := r.resolveOrderColumn(orderBy)
+		if err != nil {
+			return nil, 0, err
 		}
+		query = query.Order(clause.OrderByColumn{Column: clause.Column{Name: column}, Desc: desc})
 	}
 
 	// 获取总数
@@ -418,6 +426,20 @@ func (r *BaseRepository[T]) FindWithPagination(ctx context.Context, page, pageSi
 	}
 
 	return entities, total, nil
+}
+
+// resolveOrderColumn 将排序字段白名单化：只接受实体模型中存在的字段（Go 字段名或列名），
+// 返回对应的列名，由 gorm 负责引用，绝不把调用方字符串拼进 SQL。
+func (r *BaseRepository[T]) resolveOrderColumn(orderBy string) (string, error) {
+	var entity T
+	s, err := schema.Parse(&entity, &sync.Map{}, r.db.NamingStrategy)
+	if err != nil {
+		return "", fmt.Errorf("parse model schema: %w", err)
+	}
+	if f := s.LookUpField(orderBy); f != nil && f.DBName != "" {
+		return f.DBName, nil
+	}
+	return "", fmt.Errorf("invalid order field %q for table %s", orderBy, r.tableName)
 }
 
 // Count 统计总数

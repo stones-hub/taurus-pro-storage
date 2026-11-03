@@ -67,11 +67,10 @@ func (e *ChannelEngine) getQueue(name string) chan []byte {
 }
 
 // PushBlocking 阻塞式推送数据到队列
-func (e *ChannelEngine) PushBlocking(ctx context.Context, queue string, data []byte) error {
+func (e *ChannelEngine) PushBlocking(ctx context.Context, queue string, data []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -89,11 +88,10 @@ func (e *ChannelEngine) PushBlocking(ctx context.Context, queue string, data []b
 }
 
 // PushNonBlocking 非阻塞推送数据到队列
-func (e *ChannelEngine) PushNonBlocking(ctx context.Context, queue string, data []byte) error {
+func (e *ChannelEngine) PushNonBlocking(ctx context.Context, queue string, data []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -114,11 +112,10 @@ func (e *ChannelEngine) PushNonBlocking(ctx context.Context, queue string, data 
 }
 
 // PopBlocking 阻塞式读取，有数据立即返回，无数据时阻塞直到有数据或上下文取消
-func (e *ChannelEngine) PopBlocking(ctx context.Context, queue string) ([]byte, error) {
+func (e *ChannelEngine) PopBlocking(ctx context.Context, queue string) (data []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -136,11 +133,10 @@ func (e *ChannelEngine) PopBlocking(ctx context.Context, queue string) ([]byte, 
 }
 
 // PopNonBlocking 非阻塞读取，立即返回，无数据时返回特定错误
-func (e *ChannelEngine) PopNonBlocking(ctx context.Context, queue string) ([]byte, error) {
+func (e *ChannelEngine) PopNonBlocking(ctx context.Context, queue string) (data []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -161,11 +157,10 @@ func (e *ChannelEngine) PopNonBlocking(ctx context.Context, queue string) ([]byt
 }
 
 // BatchPopBlocking 批量阻塞式读取
-func (e *ChannelEngine) BatchPopBlocking(ctx context.Context, queue string, count int) ([][]byte, error) {
+func (e *ChannelEngine) BatchPopBlocking(ctx context.Context, queue string, count int) (result [][]byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -174,7 +169,7 @@ func (e *ChannelEngine) BatchPopBlocking(ctx context.Context, queue string, coun
 		return nil, common.ErrQueueNotExist
 	}
 
-	result := make([][]byte, 0, count)
+	result = make([][]byte, 0, count)
 
 	for i := 0; i < count; i++ {
 		select {
@@ -189,11 +184,10 @@ func (e *ChannelEngine) BatchPopBlocking(ctx context.Context, queue string, coun
 }
 
 // BatchPopNonBlocking 批量非阻塞读取
-func (e *ChannelEngine) BatchPopNonBlocking(ctx context.Context, queue string, count int) ([][]byte, error) {
+func (e *ChannelEngine) BatchPopNonBlocking(ctx context.Context, queue string, count int) (result [][]byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -202,7 +196,7 @@ func (e *ChannelEngine) BatchPopNonBlocking(ctx context.Context, queue string, c
 		return nil, common.ErrQueueNotExist
 	}
 
-	result := make([][]byte, 0, count)
+	result = make([][]byte, 0, count)
 
 	for i := 0; i < count; i++ {
 		select {
@@ -221,12 +215,11 @@ func (e *ChannelEngine) BatchPopNonBlocking(ctx context.Context, queue string, c
 
 // PushDelayed 将数据推入延迟队列
 // 使用Map实现，插入时间复杂度O(1)
-func (e *ChannelEngine) PushDelayed(ctx context.Context, queue string, data []byte, delay time.Duration) error {
+func (e *ChannelEngine) PushDelayed(ctx context.Context, queue string, data []byte, delay time.Duration) (err error) {
 
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
@@ -247,18 +240,16 @@ func (e *ChannelEngine) PushDelayed(ctx context.Context, queue string, data []by
 
 // PopDelayed 从延迟队列中弹出到期的数据
 // 使用Map实现，查找到期数据时间复杂度O(1)
-func (e *ChannelEngine) PopDelayed(ctx context.Context, queue string, count int) ([][]byte, error) {
+func (e *ChannelEngine) PopDelayed(ctx context.Context, queue string, count int) (result [][]byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			panicError := common.NewPanicError(r, string(debug.Stack()))
-			fmt.Println(panicError.FormatAsPretty())
+			err = common.NewPanicError(r, string(debug.Stack()))
 		}
 	}()
 
 	e.delayedQueueMu.Lock()
 	defer e.delayedQueueMu.Unlock()
 
-	var result [][]byte
 	var expiredTimestamps []int64
 	now := time.Now().Unix()
 
