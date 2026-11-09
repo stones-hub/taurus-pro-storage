@@ -93,6 +93,8 @@ func main() {
 }
 ```
 
+**调用方 ctx deadline（可选）**：`redisx.WithContextTimeoutEnabled(true)` 透传 go-redis 的 `ContextTimeoutEnabled`，默认 `false` 保持兼容（socket 读写只受 `ReadTimeout`/`WriteTimeout` 约束）。开启后每次 socket 读写的 deadline 取调用方 ctx deadline 与读写超时中更早者（冷连接握手的读写同样适用）。只取消父 ctx（无 deadline）不保证立即中止已阻塞的 I/O，需由调用方显式设置 deadline 才能保证有限的剩余等待；该 deadline 只是 Redis 客户端的读写预算，不等于整个 HTTP 请求 SLA，也不保证终止 go-redis 内部后台任务。
+
 #### 2. 初始化数据库
 
 ```go

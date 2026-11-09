@@ -912,6 +912,7 @@ func TestRedisOptions(t *testing.T) {
 		assert.False(t, opts.EnableLog)
 		assert.Nil(t, opts.Logger)
 		assert.Equal(t, 2, opts.Protocol)
+		assert.False(t, opts.ContextTimeoutEnabled, "默认不让ctx deadline作用于socket读写")
 	})
 
 	t.Run("Option Functions", func(t *testing.T) {
@@ -950,6 +951,12 @@ func TestRedisOptions(t *testing.T) {
 		// 测试WithProtocol
 		WithProtocol(3)(opts)
 		assert.Equal(t, 3, opts.Protocol)
+
+		// 测试WithContextTimeoutEnabled
+		WithContextTimeoutEnabled(true)(opts)
+		assert.True(t, opts.ContextTimeoutEnabled)
+		WithContextTimeoutEnabled(false)(opts)
+		assert.False(t, opts.ContextTimeoutEnabled)
 	})
 }
 

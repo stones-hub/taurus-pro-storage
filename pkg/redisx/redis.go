@@ -51,6 +51,9 @@ type Options struct {
 	EnableLog    bool          // 是否启用日志
 	Logger       *RedisLogger  // 日志记录器
 	Protocol     int           // Redis协议版本 (2=Redis 2.x, 3=Redis 6.0+)
+
+	// ContextTimeoutEnabled 是否让socket读写deadline遵循调用方ctx的deadline（默认false），见 WithContextTimeoutEnabled
+	ContextTimeoutEnabled bool
 }
 
 // Option 定义配置选项函数类型
@@ -122,20 +125,34 @@ func WithProtocol(protocol int) Option {
 	}
 }
 
+// WithContextTimeoutEnabled 设置是否让命令的socket读写遵循调用方ctx的deadline（透传go-redis的ContextTimeoutEnabled）
+//
+// false（默认）：保持兼容，socket读写只受ReadTimeout/WriteTimeout约束，调用方ctx的deadline不作用于读写。
+// true：每次socket读写的deadline取调用方ctx deadline与ReadTimeout/WriteTimeout中更早者，冷连接初始化
+// 握手（HELLO等）的读写同样适用。父ctx被取消（无deadline）不保证立即中止已阻塞的I/O，调用方需显式设置
+// deadline才能保证有限的剩余等待；该deadline只是Redis客户端读写预算，不等于整个请求SLA，也不保证终止
+// go-redis内部的后台任务。
+func WithContextTimeoutEnabled(enabled bool) Option {
+	return func(o *Options) {
+		o.ContextTimeoutEnabled = enabled
+	}
+}
+
 // DefaultOptions 返回默认配置
 func DefaultOptions() *Options {
 	return &Options{
-		Addrs:        []string{"localhost:6379"},
-		DB:           0,
-		PoolSize:     10,
-		MinIdleConns: 5,
-		DialTimeout:  5 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
-		MaxRetries:   3,
-		EnableLog:    false,
-		Logger:       nil,
-		Protocol:     2, // 默认使用Redis 2.x协议，兼容旧版本
+		Addrs:                 []string{"localhost:6379"},
+		DB:                    0,
+		PoolSize:              10,
+		MinIdleConns:          5,
+		DialTimeout:           5 * time.Second,
+		ReadTimeout:           3 * time.Second,
+		WriteTimeout:          3 * time.Second,
+		MaxRetries:            3,
+		EnableLog:             false,
+		Logger:                nil,
+		Protocol:              2,     // 默认使用Redis 2.x协议，兼容旧版本
+		ContextTimeoutEnabled: false, // 默认不让ctx deadline作用于socket读写，兼容旧行为
 	}
 }
 
@@ -149,44 +166,7 @@ func InitRedis(opts ...Option) error {
 		opt(options)
 	}
 
-	var client redis.UniversalClient
-
-	// 根据地址数量决定使用的模式
-	if len(options.Addrs) == 1 {
-		// 单机模式
-		client = redis.NewClient(&redis.Options{
-			Addr:         options.Addrs[0],
-			Password:     options.Password,
-			DB:           options.DB,
-			PoolSize:     options.PoolSize,
-			MinIdleConns: options.MinIdleConns,
-			DialTimeout:  options.DialTimeout,
-			ReadTimeout:  options.ReadTimeout,
-			WriteTimeout: options.WriteTimeout,
-			MaxRetries:   options.MaxRetries,
-			// 禁用自动协议协商，避免HELLO命令
-			Protocol: options.Protocol,
-			// 禁用客户端信息设置，避免CLIENT SETINFO命令
-			DisableIndentity: true,
-		})
-	} else {
-		// 集群模式
-		client = redis.NewUniversalClient(&redis.UniversalOptions{
-			Addrs:        options.Addrs,
-			Password:     options.Password,
-			DB:           options.DB,
-			PoolSize:     options.PoolSize,
-			MinIdleConns: options.MinIdleConns,
-			DialTimeout:  options.DialTimeout,
-			ReadTimeout:  options.ReadTimeout,
-			WriteTimeout: options.WriteTimeout,
-			MaxRetries:   options.MaxRetries,
-			// 禁用自动协议协商，避免HELLO命令
-			Protocol: options.Protocol,
-			// 禁用客户端信息设置，避免CLIENT SETINFO命令
-			DisableIndentity: true,
-		})
-	}
+	client := newUniversalClient(options)
 
 	// 如果启用了日志，添加日志Hook
 	if options.EnableLog && options.Logger != nil {
@@ -219,6 +199,49 @@ func InitRedis(opts ...Option) error {
 	}
 
 	return nil
+}
+
+// newUniversalClient 根据地址数量构造底层客户端，只构造不做连接检查（Ping由InitRedis负责）
+func newUniversalClient(options *Options) redis.UniversalClient {
+	if len(options.Addrs) == 1 {
+		// 单机模式
+		return redis.NewClient(&redis.Options{
+			Addr:         options.Addrs[0],
+			Password:     options.Password,
+			DB:           options.DB,
+			PoolSize:     options.PoolSize,
+			MinIdleConns: options.MinIdleConns,
+			DialTimeout:  options.DialTimeout,
+			ReadTimeout:  options.ReadTimeout,
+			WriteTimeout: options.WriteTimeout,
+			MaxRetries:   options.MaxRetries,
+			// 指定协议版本；go-redis建连时仍会发送HELLO，服务端不支持时回落RESP2
+			Protocol: options.Protocol,
+			// 是否让socket读写deadline遵循调用方ctx
+			ContextTimeoutEnabled: options.ContextTimeoutEnabled,
+			// 禁用客户端信息设置，避免CLIENT SETINFO命令
+			DisableIndentity: true,
+		})
+	}
+
+	// 集群模式
+	return redis.NewUniversalClient(&redis.UniversalOptions{
+		Addrs:        options.Addrs,
+		Password:     options.Password,
+		DB:           options.DB,
+		PoolSize:     options.PoolSize,
+		MinIdleConns: options.MinIdleConns,
+		DialTimeout:  options.DialTimeout,
+		ReadTimeout:  options.ReadTimeout,
+		WriteTimeout: options.WriteTimeout,
+		MaxRetries:   options.MaxRetries,
+		// 指定协议版本；go-redis建连时仍会发送HELLO，服务端不支持时回落RESP2
+		Protocol: options.Protocol,
+		// 是否让socket读写deadline遵循调用方ctx
+		ContextTimeoutEnabled: options.ContextTimeoutEnabled,
+		// 禁用客户端信息设置，避免CLIENT SETINFO命令
+		DisableIndentity: true,
+	})
 }
 
 // parseRedisVersion 解析Redis版本信息
